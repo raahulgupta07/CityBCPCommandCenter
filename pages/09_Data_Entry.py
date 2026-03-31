@@ -18,6 +18,7 @@ from utils.database import (
 from parsers.blackout_parser import parse_blackout_file
 from parsers.fuel_price_parser import parse_fuel_price_file
 from alerts.alert_engine import run_all_checks, get_active_alerts
+from utils.email_sender import is_email_configured, send_alert_email
 from config.settings import SECTORS
 
 st.set_page_config(page_title="Data Entry", page_icon="📤", layout="wide")
@@ -296,6 +297,18 @@ if selected == "📁 Upload Files":
                     with st.expander(f"🟡 {len(warning)} WARNING alerts"):
                         for _, a in warning.iterrows():
                             st.markdown(f"- **{a['site_id'] or a['sector_id']}**: {a['message']}")
+                # Auto-send email if configured
+                if is_email_configured():
+                    all_alerts = get_active_alerts()
+                    if not all_alerts.empty:
+                        with st.spinner("📧 Sending alert emails..."):
+                            sent, errors = send_alert_email(all_alerts)
+                        if sent > 0:
+                            st.success(f"📧 Alert emails sent to {sent} recipient(s)")
+                        for e in errors:
+                            st.caption(f"⚠️ Email error: {e}")
+                else:
+                    st.caption("💡 Configure email in Settings page to auto-send alerts after upload.")
             else:
                 st.success("✅ No alerts — all values within safe thresholds.")
 

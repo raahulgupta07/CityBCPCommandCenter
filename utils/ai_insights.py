@@ -1,15 +1,68 @@
 """
-AI Insights — Sends FULL chart/table data to LLM for deep analysis.
-One button per page generates all insights with actual numbers.
+AI Insights — Persisted in database. Shows timestamp. Refresh button replaces old.
 """
 import streamlit as st
 import pandas as pd
 import json
+from datetime import datetime
 from utils.llm_client import call_llm_simple, is_llm_available
+from utils.database import get_db
+
+
+# ─── DB Cache Operations ────────────────────────────────────────────────────
+
+def _get_cached(key):
+    """Get insight from DB. Returns (text, generated_at) or (None, None)."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT insight_text, generated_at FROM ai_insights_cache WHERE insight_key = ?",
+            (key,)
+        ).fetchone()
+    if row:
+        return row["insight_text"], row["generated_at"]
+    return None, None
+
+
+def _save_cache(key, insight_type, text, data_date=None):
+    """Save insight to DB."""
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO ai_insights_cache (insight_key, insight_type, insight_text, data_date, generated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(insight_key) DO UPDATE SET
+                insight_text = excluded.insight_text,
+                data_date = excluded.data_date,
+                generated_at = datetime('now')
+        """, (key, insight_type, text, data_date))
+
+
+def _delete_cache(key):
+    """Delete a cached insight."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM ai_insights_cache WHERE insight_key = ?", (key,))
+
+
+def _get_last_upload_date():
+    """Get the latest data upload timestamp."""
+    with get_db() as conn:
+        row = conn.execute("SELECT MAX(uploaded_at) as d FROM upload_history").fetchone()
+        return row["d"] if row and row["d"] else None
+
+
+def _get_latest_data_date():
+    """Get the latest date in the data."""
+    with get_db() as conn:
+        row = conn.execute("SELECT MAX(date) as d FROM daily_site_summary").fetchone()
+        return row["d"] if row and row["d"] else None
+
+
+# ─── Pending Queue ───────────────────────────────────────────────────────
 
 if "_pending_insights" not in st.session_state:
     st.session_state["_pending_insights"] = []
 
+
+# ─── LLM Call ────────────────────────────────────────────────────────────
 
 def _generate(prompt, max_tokens=500):
     if not is_llm_available():
@@ -19,38 +72,49 @@ def _generate(prompt, max_tokens=500):
 
 
 def _prepare_data(data, max_rows=50):
-    """Convert data to detailed string for LLM — send ALL the numbers."""
+    """Convert data to detailed string — send ALL numbers to LLM."""
     if isinstance(data, pd.DataFrame):
         if data.empty:
             return "No data available"
         info = f"DataFrame: {len(data)} rows x {len(data.columns)} columns\n"
         info += f"Columns: {', '.join(data.columns)}\n\n"
-
-        # Send stats for numeric columns
         numeric = data.select_dtypes(include="number")
         if not numeric.empty:
             info += "Statistics:\n"
             for col in numeric.columns:
                 info += f"  {col}: min={numeric[col].min():.2f}, max={numeric[col].max():.2f}, avg={numeric[col].mean():.2f}, sum={numeric[col].sum():.2f}\n"
             info += "\n"
-
-        # Send actual rows
         rows_to_send = min(max_rows, len(data))
         info += f"Data ({rows_to_send} rows):\n"
         info += data.head(rows_to_send).to_string(index=False)
         return info
-
     elif isinstance(data, dict):
         return json.dumps(data, default=str, indent=2)
-    else:
-        return str(data)
+    return str(data)
+
+
+# ─── Public API ──────────────────────────────────────────────────────────
+
+def render_data_timestamp():
+    """Show when data was last uploaded and latest data date."""
+    upload_date = _get_last_upload_date()
+    data_date = _get_latest_data_date()
+    parts = []
+    if data_date:
+        parts.append(f"Data through: **{data_date}**")
+    if upload_date:
+        parts.append(f"Last upload: **{upload_date[:16]}**")
+    if parts:
+        st.caption(" | ".join(parts))
 
 
 def render_insight_panel(context, data, key):
-    """Queue insight with FULL data for deep analysis."""
+    """Show DB-cached insight or queue for generation."""
     cache_key = f"ai_{key}"
-    if cache_key in st.session_state:
-        _show_insight(st.session_state[cache_key])
+    text, generated_at = _get_cached(cache_key)
+
+    if text:
+        _show_insight(text, generated_at)
     else:
         st.session_state["_pending_insights"].append({
             "cache_key": cache_key, "context": context,
@@ -60,8 +124,10 @@ def render_insight_panel(context, data, key):
 
 def render_page_summary(page_name, kpi_data, charts_data=None):
     cache_key = f"summary_{page_name}"
-    if cache_key in st.session_state:
-        _show_summary(st.session_state[cache_key])
+    text, generated_at = _get_cached(cache_key)
+
+    if text:
+        _show_summary(text, generated_at)
     else:
         st.session_state["_pending_insights"].append({
             "cache_key": cache_key, "kpi_data": kpi_data,
@@ -72,8 +138,10 @@ def render_page_summary(page_name, kpi_data, charts_data=None):
 
 def render_forecast_insight(model_name, forecast_data, key):
     cache_key = f"fc_{key}"
-    if cache_key in st.session_state:
-        _show_forecast(st.session_state[cache_key])
+    text, generated_at = _get_cached(cache_key)
+
+    if text:
+        _show_forecast(text, generated_at)
     else:
         st.session_state["_pending_insights"].append({
             "cache_key": cache_key, "model_name": model_name,
@@ -82,64 +150,95 @@ def render_forecast_insight(model_name, forecast_data, key):
 
 
 def finish_page():
-    """Call at END of every page. Shows one button to generate ALL insights."""
+    """
+    Call at END of every page.
+    Shows data timestamp + Generate button + Refresh button.
+    """
     pending = [p for p in st.session_state.get("_pending_insights", [])
-               if p["cache_key"] not in st.session_state]
+               if _get_cached(p["cache_key"])[0] is None]
     st.session_state["_pending_insights"] = []
 
-    if not pending or not is_llm_available():
+    st.markdown("---")
+
+    # Data timestamp
+    render_data_timestamp()
+
+    if not is_llm_available():
+        st.caption("Set OPENROUTER_API_KEY for AI insights.")
         return
 
-    st.markdown("---")
-    if st.button(f"🧠 Generate Deep AI Analysis ({len(pending)} sections)", key="btn_ai_all",
-                 type="primary", use_container_width=True):
-        progress = st.progress(0, text="🧠 Analyzing data...")
+    col1, col2 = st.columns(2)
 
-        for i, item in enumerate(pending):
-            progress.progress((i + 1) / len(pending),
-                              text=f"🧠 Deep analysis {i+1}/{len(pending)}: {item.get('context', item.get('page_name', ''))[:50]}...")
-            try:
-                if item["type"] == "insight":
-                    result = _gen_deep_insight(item["context"], item["data"])
-                elif item["type"] == "summary":
-                    result = _gen_deep_summary(item["page_name"], item["kpi_data"], item.get("charts_data"))
-                elif item["type"] == "forecast":
-                    result = _gen_deep_forecast(item["model_name"], item["forecast_data"])
-                else:
-                    result = None
+    # Generate new insights (for uncached)
+    with col1:
+        if pending:
+            if st.button(f"🧠 Generate AI Analysis ({len(pending)} sections)", key="btn_ai_gen",
+                         type="primary", use_container_width=True):
+                _run_generation(pending)
+        else:
+            st.success("✅ All AI insights are up to date.")
 
-                if result:
-                    st.session_state[item["cache_key"]] = result
-            except Exception:
-                pass
-
-        progress.empty()
-        st.rerun()
+    # Refresh ALL insights (delete old, regenerate)
+    with col2:
+        if st.button("🔄 Refresh All Analysis (new data)", key="btn_ai_refresh",
+                     use_container_width=True):
+            # Delete all cached insights for this page
+            with get_db() as conn:
+                conn.execute("DELETE FROM ai_insights_cache")
+            st.session_state.clear()
+            st.rerun()
 
 
-# ─── Deep Analysis Generators (send FULL data) ──────────────────────────
+def _run_generation(pending):
+    """Generate all pending insights with progress bar."""
+    data_date = _get_latest_data_date()
+    progress = st.progress(0, text="🧠 Analyzing data...")
+
+    for i, item in enumerate(pending):
+        label = item.get("context", item.get("page_name", ""))[:60]
+        progress.progress((i + 1) / len(pending), text=f"🧠 Analyzing: {label}...")
+
+        try:
+            if item["type"] == "insight":
+                result = _gen_deep_insight(item["context"], item["data"])
+            elif item["type"] == "summary":
+                result = _gen_deep_summary(item["page_name"], item["kpi_data"], item.get("charts_data"))
+            elif item["type"] == "forecast":
+                result = _gen_deep_forecast(item["model_name"], item["forecast_data"])
+            else:
+                result = None
+
+            if result:
+                _save_cache(item["cache_key"], item["type"], result, data_date)
+        except Exception:
+            pass
+
+    progress.empty()
+    st.rerun()
+
+
+# ─── Deep Analysis Generators ───────────────────────────────────────────
 
 def _gen_deep_insight(context, data):
     data_str = _prepare_data(data)
-
-    return _generate(f"""You are a senior BCP analyst. Analyze this data deeply and give actionable insights.
+    return _generate(f"""You are a senior BCP analyst. Analyze this data deeply.
 
 CONTEXT: {context}
 
 FULL DATA:
 {data_str}
 
-Provide a DEEP analysis in this format:
+Provide analysis in this format:
 
-**Key Finding:** What is the most important pattern or number? Compare highs vs lows. Name specific sites.
+**Key Finding:** Most important pattern. Compare highs vs lows. Name specific sites and numbers.
 
-**Risk Assessment:** What's dangerous? Which sites/generators are at risk? Quantify the risk with numbers.
+**Risk Assessment:** What's dangerous? Which sites/generators at risk? Quantify with numbers.
 
-**Root Cause:** Why might this be happening? (fuel delivery delays? generator overuse? price spikes?)
+**Root Cause:** Why might this be happening?
 
-**Action Required:** Exactly what should be done, by whom, and by when? Be specific — "Deliver 500L to CMZWN by tomorrow" not just "increase fuel."
+**Action Required:** Exactly what should be done, by whom, by when? Be specific — "Deliver 500L to CMZWN by tomorrow" not "increase fuel."
 
-Use actual numbers from the data. Name specific sites. Be direct — this is for managers who need to make decisions NOW.""", 500)
+Use actual numbers from the data. Name sites. Be direct.""", 500)
 
 
 def _gen_deep_summary(page_name, kpi_data, charts_data):
@@ -147,45 +246,56 @@ def _gen_deep_summary(page_name, kpi_data, charts_data):
     if charts_data is not None and isinstance(charts_data, pd.DataFrame):
         combined += "\n\nAdditional data:\n" + _prepare_data(charts_data, 20)
 
-    return _generate(f"""Write a 3-sentence executive summary for the {page_name} page.
+    return _generate(f"""Write a 3-sentence executive summary for {page_name}.
 
 DATA:
 {combined}
 
-Sentence 1: Start with 🟢 🟡 or 🔴 status + the KEY number that matters most.
-Sentence 2: The biggest RISK right now with specific site names and numbers.
-Sentence 3: The ONE action the leadership team should take today.
-
-Use actual numbers. Name sites. Be specific and direct.""", 200)
+Sentence 1: 🟢 🟡 or 🔴 status + KEY number.
+Sentence 2: Biggest RISK with site names and numbers.
+Sentence 3: ONE action leadership should take today.""", 200)
 
 
 def _gen_deep_forecast(model_name, forecast_data):
     data_str = _prepare_data(forecast_data)
-
-    return _generate(f"""Analyze this {model_name} forecast for non-technical managers.
+    return _generate(f"""Analyze this {model_name} forecast for managers.
 
 FORECAST DATA:
 {data_str}
 
-Provide:
-**What's happening:** Price/consumption direction, exact % change, compare today vs 7 days from now.
-**Business impact:** How much more/less will fuel cost? Estimate MMK impact across all sites.
-**Recommended action:** Buy now or wait? Lock in price? Switch supplier? Be specific with timing.""", 300)
+**What's happening:** Direction, exact % change, today vs 7 days.
+**Business impact:** How much more/less will fuel cost in MMK?
+**Action:** Buy now or wait? Switch supplier? Be specific with timing.""", 300)
 
 
-# ─── Display ─────────────────────────────────────────────────────────────
+# ─── Display Helpers ─────────────────────────────────────────────────────
 
-def _show_insight(text):
+def _show_insight(text, generated_at):
+    ts = _format_ts(generated_at)
     st.markdown(f"""<div style="background:#f0f9ff;border-left:4px solid #3b82f6;padding:14px 18px;
         border-radius:0 8px 8px 0;margin:8px 0 16px 0;font-size:14px;color:#1e3a5f;line-height:1.6">
-        <strong>💡 Deep Insight:</strong><br>{text}</div>""", unsafe_allow_html=True)
+        <strong>💡 Deep Insight</strong> <span style="font-size:11px;color:#94a3b8">Generated: {ts}</span><br>{text}</div>""",
+        unsafe_allow_html=True)
 
-def _show_summary(text):
+def _show_summary(text, generated_at):
+    ts = _format_ts(generated_at)
     st.markdown(f"""<div style="background:linear-gradient(135deg,#eff6ff,#f0fdf4);border:1px solid #bfdbfe;
         border-radius:10px;padding:18px;margin-bottom:16px;font-size:15px;line-height:1.6">
-        <strong>🧠 Executive Summary:</strong><br>{text}</div>""", unsafe_allow_html=True)
+        <strong>🧠 Executive Summary</strong> <span style="font-size:11px;color:#94a3b8">Generated: {ts}</span><br>{text}</div>""",
+        unsafe_allow_html=True)
 
-def _show_forecast(text):
+def _show_forecast(text, generated_at):
+    ts = _format_ts(generated_at)
     st.markdown(f"""<div style="background:#fefce8;border-left:4px solid #eab308;padding:14px 18px;
         border-radius:0 8px 8px 0;margin:8px 0 16px 0;font-size:14px;color:#713f12;line-height:1.6">
-        <strong>🔮 Forecast Analysis:</strong><br>{text}</div>""", unsafe_allow_html=True)
+        <strong>🔮 Forecast Analysis</strong> <span style="font-size:11px;color:#94a3b8">Generated: {ts}</span><br>{text}</div>""",
+        unsafe_allow_html=True)
+
+def _format_ts(ts):
+    if not ts:
+        return "N/A"
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt.strftime("%d %b %Y, %I:%M %p")
+    except Exception:
+        return ts[:16]

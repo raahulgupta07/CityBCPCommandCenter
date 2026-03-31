@@ -162,6 +162,45 @@ CREATE TABLE IF NOT EXISTS incidents (
     created_at              TEXT DEFAULT (datetime('now'))
 );
 
+-- 11. App Settings (SMTP, preferences — configured via UI)
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- 12. Alert Recipients
+CREATE TABLE IF NOT EXISTS alert_recipients (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    email       TEXT NOT NULL,
+    role        TEXT DEFAULT 'viewer',
+    sectors     TEXT,
+    severity_filter TEXT DEFAULT 'CRITICAL,WARNING',
+    is_active   INTEGER DEFAULT 1,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- 13. Email Log
+CREATE TABLE IF NOT EXISTS email_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipient   TEXT NOT NULL,
+    subject     TEXT NOT NULL,
+    alert_count INTEGER DEFAULT 0,
+    status      TEXT DEFAULT 'sent',
+    error       TEXT,
+    sent_at     TEXT DEFAULT (datetime('now'))
+);
+
+-- 14. AI Insights Cache (persists across sessions)
+CREATE TABLE IF NOT EXISTS ai_insights_cache (
+    insight_key         TEXT PRIMARY KEY,
+    insight_type        TEXT NOT NULL,
+    insight_text        TEXT NOT NULL,
+    data_date           TEXT,
+    generated_at        TEXT DEFAULT (datetime('now'))
+);
+
 -- Indexes for fast queries
 CREATE INDEX IF NOT EXISTS idx_daily_ops_site_date ON daily_operations(site_id, date);
 CREATE INDEX IF NOT EXISTS idx_daily_ops_date ON daily_operations(date);
@@ -297,6 +336,30 @@ def create_alert(conn, alert_type, severity, message, site_id=None,
         VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (alert_type, severity, site_id, sector_id, message,
           metric_value, threshold))
+
+# ─── Settings Helpers ────────────────────────────────────────────────────────
+
+def get_setting(key, default=None):
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+def set_setting(key, value):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+        """, (key, str(value)))
+
+def get_all_settings(prefix=None):
+    with get_db() as conn:
+        if prefix:
+            rows = conn.execute("SELECT key, value FROM app_settings WHERE key LIKE ?",
+                                (f"{prefix}%",)).fetchall()
+        else:
+            rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+    return {r["key"]: r["value"] for r in rows}
 
 # ─── Initialize on import ───────────────────────────────────────────────────
 init_db()
