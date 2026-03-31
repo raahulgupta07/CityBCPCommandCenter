@@ -17,6 +17,9 @@ from models.fuel_price_forecast import forecast_fuel_price
 from config.settings import SECTORS
 
 st.set_page_config(page_title="Fuel Price Intelligence", page_icon="⛽", layout="wide")
+require_login()
+render_sidebar_user()
+
 st.title("⛽ Fuel Price Intelligence")
 
 ui.alert(
@@ -303,4 +306,5 @@ render_fuel_content(sector_filter, tab_key)
 
 # ─── AI Insights Button ────────────────────────────────────────────────────
 from utils.ai_insights import finish_page
+from utils.auth import require_login, render_sidebar_user
 finish_page()

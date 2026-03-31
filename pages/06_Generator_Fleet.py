@@ -16,6 +16,9 @@ from utils.ai_insights import render_insight_panel, render_page_summary
 from config.settings import SECTORS
 
 st.set_page_config(page_title="Generator Fleet", page_icon="🔧", layout="wide")
+require_login()
+render_sidebar_user()
+
 st.title("🔧 Generator Fleet Analytics")
 
 ui.alert(
@@ -335,4 +338,5 @@ else:
 
 # ─── AI Insights Button ────────────────────────────────────────────────────
 from utils.ai_insights import finish_page
+from utils.auth import require_login, render_sidebar_user
 finish_page()

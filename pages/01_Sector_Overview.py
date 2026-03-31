@@ -19,6 +19,9 @@ from models.buffer_predictor import predict_buffer_depletion, get_critical_sites
 from config.settings import SECTORS, ALERTS
 
 st.set_page_config(page_title="Sector Overview", page_icon="📊", layout="wide")
+require_login()
+render_sidebar_user()
+
 st.title("📊 Sector Overview")
 
 ui.alert(
@@ -267,4 +270,5 @@ except Exception as e:
 
 # ─── AI Insights Button ────────────────────────────────────────────────────
 from utils.ai_insights import finish_page
+from utils.auth import require_login, render_sidebar_user
 finish_page()

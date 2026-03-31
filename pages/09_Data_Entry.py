@@ -20,8 +20,13 @@ from parsers.fuel_price_parser import parse_fuel_price_file
 from alerts.alert_engine import run_all_checks, get_active_alerts
 from utils.email_sender import is_email_configured, send_alert_email
 from config.settings import SECTORS
+from utils.auth import require_login, require_role, render_sidebar_user, has_permission
 
 st.set_page_config(page_title="Data Entry", page_icon="📤", layout="wide")
+require_login()
+require_role("admin")  # Only admin and super_admin can upload data
+render_sidebar_user()
+
 st.title("📤 Data Entry")
 
 ui.alert(

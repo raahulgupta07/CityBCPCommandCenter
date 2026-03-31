@@ -162,7 +162,22 @@ CREATE TABLE IF NOT EXISTS incidents (
     created_at              TEXT DEFAULT (datetime('now'))
 );
 
--- 11. App Settings (SMTP, preferences — configured via UI)
+-- 11. Users (authentication + roles)
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    username        TEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    email           TEXT,
+    role            TEXT NOT NULL DEFAULT 'user',
+    sectors         TEXT,
+    is_active       INTEGER DEFAULT 1,
+    last_login      TEXT,
+    created_by      TEXT,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- 12. App Settings (SMTP, preferences — configured via UI)
 CREATE TABLE IF NOT EXISTS app_settings (
     key         TEXT PRIMARY KEY,
     value       TEXT,
@@ -222,6 +237,15 @@ def init_db():
                     "INSERT INTO sectors (sector_id, sector_name) VALUES (?, ?)",
                     (sid, info["name"]),
                 )
+        # Seed default super admin if no users exist
+        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        if user_count == 0:
+            import hashlib
+            default_pass = hashlib.sha256("admin123".encode()).hexdigest()
+            conn.execute("""
+                INSERT INTO users (username, password_hash, display_name, email, role, created_by)
+                VALUES ('admin', ?, 'Super Admin', '', 'super_admin', 'system')
+            """, (default_pass,))
 
 # ─── CRUD Helpers ────────────────────────────────────────────────────────────
 

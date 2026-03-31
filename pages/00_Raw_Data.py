@@ -9,8 +9,12 @@ import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
 from utils.database import get_db
+from utils.auth import require_login, render_sidebar_user
 
 st.set_page_config(page_title="Raw Data", page_icon="🗄️", layout="wide")
+require_login()
+render_sidebar_user()
+
 st.title("🗄️ Raw Data Browser")
 
 ui.alert(

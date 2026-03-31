@@ -21,6 +21,9 @@ from models.efficiency_scorer import get_fleet_efficiency_summary, get_anomalies
 from alerts.alert_engine import run_all_checks, get_active_alerts
 
 st.set_page_config(page_title="BCP Command Center", page_icon="🛡️", layout="wide")
+require_login()
+render_sidebar_user()
+
 st.title("🛡️ BCP Command Center")
 
 ui.alert(
@@ -494,4 +497,5 @@ render_insight_panel(
 
 # ─── AI Insights Button ────────────────────────────────────────────────────
 from utils.ai_insights import finish_page
+from utils.auth import require_login, render_sidebar_user
 finish_page()

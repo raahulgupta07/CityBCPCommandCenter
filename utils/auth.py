@@ -1,0 +1,243 @@
+"""
+Authentication & Authorization — Role-based access control.
+
+Roles:
+  super_admin — Full access: settings, user management, upload, analysis, view
+  admin       — Upload data, run analysis, view all, manage alert recipients
+  user        — View dashboards and analysis only (read-only)
+"""
+import streamlit as st
+import hashlib
+from datetime import datetime
+from utils.database import get_db
+
+# ─── Role Definitions ────────────────────────────────────────────────────────
+
+ROLES = {
+    "super_admin": {
+        "label": "Super Admin",
+        "description": "Full access — settings, users, upload, analysis, view",
+        "can_manage_users": True,
+        "can_manage_settings": True,
+        "can_upload": True,
+        "can_edit_data": True,
+        "can_view": True,
+    },
+    "admin": {
+        "label": "Admin",
+        "description": "Upload data, run analysis, manage recipients, view all",
+        "can_manage_users": False,
+        "can_manage_settings": False,
+        "can_upload": True,
+        "can_edit_data": True,
+        "can_view": True,
+    },
+    "user": {
+        "label": "User",
+        "description": "View dashboards and analysis only (read-only)",
+        "can_manage_users": False,
+        "can_manage_settings": False,
+        "can_upload": False,
+        "can_edit_data": False,
+        "can_view": True,
+    },
+}
+
+# Which pages each role can access
+PAGE_ACCESS = {
+    "super_admin": ["all"],
+    "admin": ["Raw Data", "Sector Overview", "Site Detail", "Fuel Price",
+              "Buffer Risk", "Blackout Monitor", "Generator Fleet",
+              "BCP Scores", "AI Insights", "Data Entry"],
+    "user": ["Raw Data", "Sector Overview", "Site Detail", "Fuel Price",
+             "Buffer Risk", "Blackout Monitor", "Generator Fleet",
+             "BCP Scores", "AI Insights"],
+}
+
+
+# ─── Password Hashing ───────────────────────────────────────────────────────
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def verify_password(password, password_hash):
+    return hash_password(password) == password_hash
+
+
+# ─── Session Management ─────────────────────────────────────────────────────
+
+def get_current_user():
+    """Get current logged-in user from session state."""
+    return st.session_state.get("user", None)
+
+
+def is_logged_in():
+    return get_current_user() is not None
+
+
+def get_user_role():
+    user = get_current_user()
+    return user["role"] if user else None
+
+
+def has_permission(permission):
+    """Check if current user has a specific permission."""
+    role = get_user_role()
+    if not role:
+        return False
+    role_info = ROLES.get(role, {})
+    return role_info.get(permission, False)
+
+
+def can_access_page(page_name):
+    """Check if current user can access a page."""
+    role = get_user_role()
+    if not role:
+        return False
+    allowed = PAGE_ACCESS.get(role, [])
+    return "all" in allowed or page_name in allowed
+
+
+def require_login():
+    """Call at the top of every page. Shows login if not authenticated."""
+    if is_logged_in():
+        return True
+
+    _show_login_form()
+    st.stop()
+    return False
+
+
+def require_role(min_role):
+    """Require at least this role level. super_admin > admin > user."""
+    if not is_logged_in():
+        _show_login_form()
+        st.stop()
+        return False
+
+    role_order = {"super_admin": 3, "admin": 2, "user": 1}
+    current = role_order.get(get_user_role(), 0)
+    required = role_order.get(min_role, 0)
+
+    if current < required:
+        st.error(f"Access denied. You need **{ROLES[min_role]['label']}** role or higher.")
+        st.stop()
+        return False
+    return True
+
+
+def logout():
+    st.session_state.pop("user", None)
+
+
+# ─── Login Form ──────────────────────────────────────────────────────────────
+
+def _show_login_form():
+    st.markdown("""
+    <div style="max-width:400px;margin:80px auto;text-align:center">
+        <h1>🛡️ CityBCPAgent</h1>
+        <p style="color:#6b7280">Business Continuity Planning Dashboard</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form("login_form"):
+        col = st.columns([1, 2, 1])
+        with col[1]:
+            username = st.text_input("Username", placeholder="admin")
+            password = st.text_input("Password", type="password", placeholder="Password")
+            submitted = st.form_submit_button("Login", use_container_width=True)
+
+            if submitted:
+                user = authenticate(username, password)
+                if user:
+                    st.session_state["user"] = user
+                    # Update last login
+                    with get_db() as conn:
+                        conn.execute("UPDATE users SET last_login = datetime('now') WHERE id = ?",
+                                     (user["id"],))
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password")
+
+    st.caption("Default login: `admin` / `admin123`")
+
+
+def authenticate(username, password):
+    """Authenticate user. Returns user dict or None."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ? AND is_active = 1",
+            (username,)
+        ).fetchone()
+
+    if row and verify_password(password, row["password_hash"]):
+        return {
+            "id": row["id"],
+            "username": row["username"],
+            "display_name": row["display_name"],
+            "email": row["email"],
+            "role": row["role"],
+            "sectors": row["sectors"],
+        }
+    return None
+
+
+# ─── User Management (Super Admin) ──────────────────────────────────────────
+
+def create_user(username, password, display_name, email, role, sectors=None, created_by=None):
+    """Create a new user. Returns (success, error_message)."""
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            return False, f"Username '{username}' already exists"
+
+        conn.execute("""
+            INSERT INTO users (username, password_hash, display_name, email, role, sectors, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (username, hash_password(password), display_name, email, role,
+              ",".join(sectors) if sectors else None, created_by))
+    return True, None
+
+
+def list_users():
+    """Get all users."""
+    with get_db() as conn:
+        import pandas as pd
+        return pd.read_sql_query(
+            "SELECT id, username, display_name, email, role, sectors, is_active, last_login, created_by, created_at FROM users ORDER BY role, username",
+            conn
+        )
+
+
+def update_user(user_id, **kwargs):
+    """Update user fields."""
+    with get_db() as conn:
+        for key, value in kwargs.items():
+            if key == "password":
+                conn.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                             (hash_password(value), user_id))
+            elif key in ("display_name", "email", "role", "sectors", "is_active"):
+                conn.execute(f"UPDATE users SET {key} = ? WHERE id = ?", (value, user_id))
+
+
+def delete_user(user_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+# ─── Sidebar User Info ──────────────────────────────────────────────────────
+
+def render_sidebar_user():
+    """Show current user info + logout in sidebar."""
+    user = get_current_user()
+    if not user:
+        return
+
+    role_info = ROLES.get(user["role"], {})
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**{user['display_name']}**")
+    st.sidebar.caption(f"{role_info.get('label', user['role'])}")
+    if st.sidebar.button("Logout", key="btn_logout"):
+        logout()
+        st.rerun()

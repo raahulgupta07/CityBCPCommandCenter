@@ -7,6 +7,7 @@ import streamlit_shadcn_ui as ui
 import pandas as pd
 from config.settings import DASHBOARD, SECTORS, DB_PATH
 from utils.database import get_db
+from utils.auth import require_login, render_sidebar_user, get_current_user, ROLES
 
 st.set_page_config(
     page_title=DASHBOARD["page_title"],
@@ -14,6 +15,10 @@ st.set_page_config(
     layout=DASHBOARD["layout"],
     initial_sidebar_state="expanded",
 )
+
+# ─── Auth ────────────────────────────────────────────────────────────────────
+require_login()
+render_sidebar_user()
 
 # ─── Global CSS ──────────────────────────────────────────────────────────────
 st.html("""

@@ -14,6 +14,9 @@ from utils.ai_insights import render_insight_panel, render_page_summary
 from config.settings import SECTORS, ALERTS
 
 st.set_page_config(page_title="AI Insights Hub", page_icon="🤖", layout="wide")
+require_login()
+render_sidebar_user()
+
 st.title("🤖 AI Insights Hub")
 
 ui.alert(
@@ -329,4 +332,5 @@ elif selected == "🚨 Alerts":
 
 # ─── AI Insights Button ────────────────────────────────────────────────────
 from utils.ai_insights import finish_page
+from utils.auth import require_login, render_sidebar_user
 finish_page()
