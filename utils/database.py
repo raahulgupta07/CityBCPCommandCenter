@@ -6,6 +6,9 @@ import json
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from config.settings import DB_PATH, DATA_DIR
 
@@ -237,15 +240,18 @@ def init_db():
                     "INSERT INTO sectors (sector_id, sector_name) VALUES (?, ?)",
                     (sid, info["name"]),
                 )
-        # Seed default super admin if no users exist
+        # Seed super admin from environment variables
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
-            import hashlib
-            default_pass = hashlib.sha256("admin123".encode()).hexdigest()
+            import hashlib, os
+            sa_user = os.environ.get("SUPER_ADMIN_USER", "admin")
+            sa_pass = os.environ.get("SUPER_ADMIN_PASS", "admin123")
+            sa_email = os.environ.get("SUPER_ADMIN_EMAIL", "")
+            sa_hash = hashlib.sha256(sa_pass.encode()).hexdigest()
             conn.execute("""
                 INSERT INTO users (username, password_hash, display_name, email, role, created_by)
-                VALUES ('admin', ?, 'Super Admin', '', 'super_admin', 'system')
-            """, (default_pass,))
+                VALUES (?, ?, 'Super Admin', ?, 'super_admin', 'system')
+            """, (sa_user, sa_hash, sa_email))
 
 # ─── CRUD Helpers ────────────────────────────────────────────────────────────
 

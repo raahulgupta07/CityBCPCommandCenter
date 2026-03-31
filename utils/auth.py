@@ -134,33 +134,71 @@ def logout():
 # ─── Login Form ──────────────────────────────────────────────────────────────
 
 def _show_login_form():
+    # Hide sidebar, header, footer — full clean screen
     st.markdown("""
-    <div style="max-width:400px;margin:80px auto;text-align:center">
-        <h1>🛡️ CityBCPAgent</h1>
-        <p style="color:#6b7280">Business Continuity Planning Dashboard</p>
+    <style>
+        [data-testid="stSidebar"] { display: none !important; }
+        [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+        header[data-testid="stHeader"] { display: none !important; }
+        footer { display: none !important; }
+        #MainMenu { display: none !important; }
+        html, body, [data-testid="stAppViewContainer"] {
+            overflow: hidden !important;
+            height: 100vh !important;
+        }
+        .block-container {
+            padding: 0 !important;
+            max-width: 100% !important;
+            height: 100vh !important;
+            overflow: hidden !important;
+        }
+        /* Dark background */
+        [data-testid="stAppViewContainer"] {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%) !important;
+        }
+        /* Center the form */
+        .stForm {
+            max-width: 360px !important;
+            margin: 0 auto !important;
+        }
+        .stForm [data-testid="stFormSubmitButton"] button {
+            background: linear-gradient(135deg, #1e3a5f, #2563eb) !important;
+            color: white !important; border: none !important;
+            padding: 12px !important; font-size: 16px !important;
+            border-radius: 8px !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Spacer + branding + form all in one flow
+    st.markdown('<div style="height:12vh"></div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:52px">🛡️</div>
+        <h1 style="color:white;margin:8px 0 4px;font-size:26px">CityBCPAgent</h1>
+        <p style="color:#94a3b8;font-size:14px;margin:0">Business Continuity Planning Dashboard</p>
     </div>
     """, unsafe_allow_html=True)
 
     with st.form("login_form"):
-        col = st.columns([1, 2, 1])
-        with col[1]:
-            username = st.text_input("Username", placeholder="admin")
-            password = st.text_input("Password", type="password", placeholder="Password")
-            submitted = st.form_submit_button("Login", use_container_width=True)
+        username = st.text_input("Username", placeholder="Enter username", label_visibility="collapsed")
+        password = st.text_input("Password", type="password", placeholder="Enter password", label_visibility="collapsed")
+        submitted = st.form_submit_button("Login", use_container_width=True)
 
-            if submitted:
-                user = authenticate(username, password)
-                if user:
-                    st.session_state["user"] = user
-                    # Update last login
-                    with get_db() as conn:
-                        conn.execute("UPDATE users SET last_login = datetime('now') WHERE id = ?",
-                                     (user["id"],))
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password")
+        if submitted:
+            user = authenticate(username, password)
+            if user:
+                st.session_state["user"] = user
+                with get_db() as conn:
+                    conn.execute("UPDATE users SET last_login = datetime('now') WHERE id = ?",
+                                 (user["id"],))
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
 
-    st.caption("Default login: `admin` / `admin123`")
+    st.markdown('<p style="text-align:center;color:#475569;font-size:11px">Default: admin / admin123</p>',
+                unsafe_allow_html=True)
 
 
 def authenticate(username, password):
