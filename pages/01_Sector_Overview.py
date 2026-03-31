@@ -10,7 +10,6 @@ import streamlit_shadcn_ui as ui
 import pandas as pd
 from utils.database import get_db
 from utils.charts import (
-from utils.auth import require_login, render_sidebar_user
     stacked_bar_by_sector, buffer_trend_with_thresholds,
     horizontal_bar, bar_chart, STATUS_COLORS, apply_layout,
 )
@@ -19,6 +18,8 @@ from utils.ai_insights import render_insight_panel, render_page_summary, render_
 from models.buffer_predictor import predict_buffer_depletion, get_critical_sites
 from config.settings import SECTORS, ALERTS
 
+
+from utils.auth import require_login, render_sidebar_user
 st.set_page_config(page_title="Sector Overview", page_icon="📊", layout="wide")
 require_login()
 render_sidebar_user()

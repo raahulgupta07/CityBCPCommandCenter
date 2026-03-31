@@ -267,15 +267,36 @@ def delete_user(user_id):
 # ─── Sidebar User Info ──────────────────────────────────────────────────────
 
 def render_sidebar_user():
-    """Show current user info + logout in sidebar."""
+    """Show dark sidebar style + user info + visible logout."""
+    # Dark sidebar CSS (consistent across all pages)
+    st.markdown("""
+    <style>
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+        }
+        [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+        [data-testid="stSidebar"] .stButton button {
+            background: rgba(255,255,255,0.1) !important;
+            border: 1px solid rgba(255,255,255,0.2) !important;
+            color: white !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stSidebar"] .stButton button:hover {
+            background: rgba(239,68,68,0.3) !important;
+            border-color: #ef4444 !important;
+        }
+        .block-container { padding-top: 1rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
     user = get_current_user()
     if not user:
         return
 
     role_info = ROLES.get(user["role"], {})
     st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**{user['display_name']}**")
-    st.sidebar.caption(f"{role_info.get('label', user['role'])}")
-    if st.sidebar.button("Logout", key="btn_logout"):
+    st.sidebar.markdown(f"👤 **{user['display_name']}**")
+    st.sidebar.caption(f"Role: {role_info.get('label', user['role'])}")
+    if st.sidebar.button("🚪 Logout", key="btn_logout", use_container_width=True):
         logout()
         st.rerun()

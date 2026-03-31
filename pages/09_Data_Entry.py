@@ -36,7 +36,7 @@ ui.alert(
 )
 
 selected = ui.tabs(
-    options=["📁 Upload Files", "🗄️ Raw Data", "🧹 How AI Cleans Data", "✏️ Quick Edit", "📋 History"],
+    options=["📁 Upload Files", "🗄️ Raw Data", "🧹 How AI Cleans Data", "📋 History"],
     default_value="📁 Upload Files",
     key="entry_tabs",
 )
@@ -329,23 +329,25 @@ if selected == "📁 Upload Files":
 # ═══════════════════════════════════════════════════════════════════════════
 elif selected == "🗄️ Raw Data":
     st.markdown("### Database Tables")
-    st.caption("Browse all data stored in the system")
+    st.caption("Browse all data stored in the system — one tab per table")
 
     TABLE_CONFIG = {
-        "Sites": ("SELECT s.site_id, s.sector_id, s.site_type, s.site_name FROM sites s ORDER BY s.sector_id, s.site_id", "57 sites across 3 sectors"),
-        "Generators": ("SELECT g.site_id, s.sector_id, g.model_name, g.power_kva, g.consumption_per_hour, g.fuel_type, g.supplier FROM generators g JOIN sites s ON g.site_id = s.site_id ORDER BY s.sector_id, g.site_id", "All generator models with KVA and consumption"),
-        "Daily Ops": ("SELECT do.date, do.site_id, g.model_name, do.gen_run_hr, do.daily_used_liters, do.spare_tank_balance, do.blackout_hr, do.source FROM daily_operations do JOIN generators g ON do.generator_id = g.generator_id ORDER BY do.date DESC, do.site_id LIMIT 500", "Per-generator per-day operations"),
-        "Site Summary": ("SELECT dss.date, dss.site_id, s.sector_id, dss.total_gen_run_hr, dss.total_daily_used, dss.spare_tank_balance, dss.days_of_buffer FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id ORDER BY dss.date DESC LIMIT 500", "Aggregated per-site: buffer days calculation"),
-        "Fuel Prices": ("SELECT date, sector_id, region, supplier, fuel_type, quantity_liters, price_per_liter FROM fuel_purchases ORDER BY date DESC LIMIT 200", "Diesel purchase prices from suppliers"),
-        "Alerts": ("SELECT alert_type, severity, site_id, sector_id, message, is_acknowledged, created_at FROM alerts ORDER BY created_at DESC LIMIT 200", "Auto-generated threshold alerts"),
-        "Uploads": ("SELECT filename, file_type, sector_id, rows_parsed, rows_accepted, rows_rejected, uploaded_at FROM upload_history ORDER BY uploaded_at DESC", "File upload audit trail"),
+        "Sites": ("SELECT s.site_id, s.sector_id, s.site_type, s.site_name FROM sites s ORDER BY s.sector_id, s.site_id", "57 sites across 3 sectors (CP, CMHL, CFC)"),
+        "Generators": ("SELECT g.site_id, s.sector_id, g.model_name, g.power_kva, g.consumption_per_hour, g.fuel_type, g.supplier FROM generators g JOIN sites s ON g.site_id = s.site_id ORDER BY s.sector_id, g.site_id", "86 generators — model, KVA rating, fuel consumption rate"),
+        "Daily Ops": ("SELECT do.date, do.site_id, g.model_name, do.gen_run_hr, do.daily_used_liters, do.spare_tank_balance, do.blackout_hr, do.source FROM daily_operations do JOIN generators g ON do.generator_id = g.generator_id ORDER BY do.date DESC, do.site_id LIMIT 500", "Per-generator per-day: run hours, fuel used, tank balance"),
+        "Site Summary": ("SELECT dss.date, dss.site_id, s.sector_id, dss.total_gen_run_hr, dss.total_daily_used, dss.spare_tank_balance, dss.days_of_buffer FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id ORDER BY dss.date DESC LIMIT 500", "Aggregated per-site: buffer = tank balance / daily usage"),
+        "Fuel Prices": ("SELECT date, sector_id, region, supplier, fuel_type, quantity_liters, price_per_liter FROM fuel_purchases ORDER BY date DESC LIMIT 200", "Diesel prices from Denko & Moon Sun (MMK/liter)"),
+        "Alerts": ("SELECT alert_type, severity, site_id, sector_id, message, is_acknowledged, created_at FROM alerts ORDER BY created_at DESC LIMIT 200", "Auto-generated alerts: buffer, price, efficiency thresholds"),
+        "Uploads": ("SELECT filename, file_type, sector_id, rows_parsed, rows_accepted, rows_rejected, uploaded_at FROM upload_history ORDER BY uploaded_at DESC", "Excel file upload audit trail"),
     }
 
-    table_selected = st.selectbox("Table", list(TABLE_CONFIG.keys()), key="raw_table")
-    query, desc = TABLE_CONFIG[table_selected]
-    st.caption(desc)
+    table_tab = ui.tabs(options=list(TABLE_CONFIG.keys()), default_value="Sites", key="raw_tabs")
 
-    search = st.text_input("Search / filter", key="raw_search", placeholder="Type to filter rows...")
+    query, desc = TABLE_CONFIG[table_tab]
+
+    st.caption(f"**{table_tab}:** {desc}")
+
+    search = st.text_input("🔍 Filter rows", key=f"raw_search_{table_tab}", placeholder="Type to search...")
 
     with get_db() as conn:
         df = pd.read_sql_query(query, conn)
@@ -354,7 +356,7 @@ elif selected == "🗄️ Raw Data":
         mask = df.astype(str).apply(lambda row: row.str.contains(search, case=False).any(), axis=1)
         df = df[mask]
 
-    ui.metric_card(title=table_selected, content=str(len(df)), description="rows", key="mc_raw_count")
+    ui.metric_card(title=table_tab, content=str(len(df)), description="rows", key=f"mc_raw_{table_tab}")
     st.dataframe(df, use_container_width=True, hide_index=True, height=400)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -407,89 +409,7 @@ elif selected == "🧹 How AI Cleans Data":
     """)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 3: Quick Edit
-# ═══════════════════════════════════════════════════════════════════════════
-elif selected == "✏️ Quick Edit":
-    st.markdown("### Quick Edit — Fix Individual Values")
-    st.caption("For quick corrections only. For bulk data, use Upload Files tab.")
-
-    @st.cache_data(ttl=60)
-    def load_edit_data():
-        with get_db() as conn:
-            sectors = [r[0] for r in conn.execute(
-                "SELECT sector_id FROM sectors WHERE sector_id IN (SELECT DISTINCT sector_id FROM sites) ORDER BY sector_id"
-            ).fetchall()]
-            gens_df = pd.read_sql_query("""
-                SELECT g.generator_id, g.site_id, s.sector_id, g.model_name
-                FROM generators g JOIN sites s ON g.site_id = s.site_id
-                WHERE g.is_active = 1 ORDER BY s.sector_id, g.site_id
-            """, conn)
-        return sectors, gens_df
-
-    edit_sectors, gens_df = load_edit_data()
-    c1, c2 = st.columns(2)
-    with c1:
-        sector = st.selectbox("Sector", edit_sectors, key="edit_sector")
-    with c2:
-        edit_date = st.date_input("Date", value=date.today(), key="edit_date")
-
-    date_str = edit_date.strftime("%Y-%m-%d")
-    sector_gens = gens_df[gens_df["sector_id"] == sector].copy()
-
-    if not sector_gens.empty:
-        with get_db() as conn:
-            existing = pd.read_sql_query("""
-                SELECT do.generator_id, do.gen_run_hr, do.daily_used_liters,
-                       do.spare_tank_balance, do.blackout_hr
-                FROM daily_operations do
-                WHERE do.date = ? AND do.site_id IN (SELECT site_id FROM sites WHERE sector_id = ?)
-            """, conn, params=(date_str, sector))
-
-        sheet = sector_gens[["generator_id", "site_id", "model_name"]].copy()
-        sheet = sheet.merge(existing, on="generator_id", how="left")
-        for col in ["gen_run_hr", "daily_used_liters", "spare_tank_balance"]:
-            sheet[col] = sheet[col].fillna(0.0)
-        has_bo = SECTORS.get(sector, {}).get("has_blackout_data", False)
-        if has_bo:
-            sheet["blackout_hr"] = sheet["blackout_hr"].fillna(0.0)
-        else:
-            sheet = sheet.drop(columns=["blackout_hr"], errors="ignore")
-
-        edited = st.data_editor(
-            sheet,
-            column_config={
-                "generator_id": None,
-                "site_id": st.column_config.TextColumn("Site", disabled=True),
-                "model_name": st.column_config.TextColumn("Generator", disabled=True),
-                "gen_run_hr": st.column_config.NumberColumn("Run Hr ✏️", min_value=0.0, max_value=24.0, step=0.25),
-                "daily_used_liters": st.column_config.NumberColumn("Used (L) ✏️", min_value=0.0, max_value=5000.0, step=10.0),
-                "spare_tank_balance": st.column_config.NumberColumn("Tank (L) ✏️", min_value=0.0, max_value=50000.0, step=50.0),
-                **({"blackout_hr": st.column_config.NumberColumn("Blackout ✏️", min_value=0.0, max_value=24.0, step=0.25)} if has_bo else {}),
-            },
-            use_container_width=True, hide_index=True,
-            key=f"edit_{sector}_{date_str}",
-        )
-
-        if st.button("💾 Save", key="save_edit", type="primary", use_container_width=True):
-            saved = 0
-            sites_updated = set()
-            with get_db() as conn:
-                for _, row in edited.iterrows():
-                    if any(row[c] > 0 for c in ["gen_run_hr", "daily_used_liters", "spare_tank_balance"]):
-                        upsert_daily_operation(
-                            conn, int(row["generator_id"]), row["site_id"], date_str,
-                            row["gen_run_hr"] or None, row["daily_used_liters"] or None,
-                            row["spare_tank_balance"] or None,
-                            row.get("blackout_hr", None) or None, source="manual",
-                        )
-                        sites_updated.add(row["site_id"])
-                        saved += 1
-                for sid in sites_updated:
-                    refresh_site_summary(conn, sid, date_str)
-            st.success(f"Saved {saved} records") if saved else st.info("Nothing to save.")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# TAB 4: History
+# TAB: History
 # ═══════════════════════════════════════════════════════════════════════════
 elif selected == "📋 History":
     st.markdown("### Upload & Database History")
