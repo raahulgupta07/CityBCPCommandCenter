@@ -1,16 +1,15 @@
 #!/bin/bash
-# Seed database if empty or missing
-if [ ! -f /app/data/bcp.db ] || [ $(python3 -c "
-import sqlite3
-conn = sqlite3.connect('/app/data/bcp.db')
-print(conn.execute('SELECT COUNT(*) FROM sites').fetchone()[0])
-conn.close()
-" 2>/dev/null || echo 0) -eq 0 ]; then
-    echo "Seeding database from Excel files..."
-    python3 seed_database.py
-    echo "Seeding complete."
+if [ ! -f /app/db/bcp.db ]; then
+    echo "First run — copying pre-seeded database..."
+    if [ -f /app/db_seed/bcp.db ]; then
+        cp /app/db_seed/bcp.db /app/db/bcp.db
+        echo "Database ready."
+    else
+        echo "Seeding from Excel..."
+        python3 seed_database.py
+    fi
 else
-    echo "Database already seeded."
+    echo "Database exists."
 fi
 
 exec streamlit run app.py \

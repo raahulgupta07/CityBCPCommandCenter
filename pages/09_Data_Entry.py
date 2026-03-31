@@ -198,9 +198,21 @@ if selected == "📁 Upload Files":
         for f in uploaded_files:
             st.caption(f"📄 {f.name} ({f.size / 1024:.0f} KB)")
 
+        st.warning("⚠️ **Full Replace Mode:** Uploading will clear ALL existing data and replace with new Excel data. This ensures your dashboard always shows the latest weekly data.")
+
         # Process button — user must click to start
-        if st.button(f"🚀 Process & Import {len(uploaded_files)} File(s)", key="btn_process",
+        if st.button(f"🚀 Clear Old Data & Import {len(uploaded_files)} File(s)", key="btn_process",
                       type="primary", use_container_width=True):
+
+            # CLEAR ALL existing operational data before importing
+            with st.spinner("🗑️ Clearing old data..."):
+                with get_db() as conn:
+                    conn.execute("DELETE FROM daily_operations")
+                    conn.execute("DELETE FROM daily_site_summary")
+                    conn.execute("DELETE FROM fuel_purchases")
+                    conn.execute("DELETE FROM alerts")
+                    conn.execute("DELETE FROM ai_insights_cache")
+                    # Keep: sites, generators, users, settings, recipients, upload_history
 
             results = []
             progress = st.progress(0, text="Starting...")

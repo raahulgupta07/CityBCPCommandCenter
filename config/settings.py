@@ -6,9 +6,9 @@ from pathlib import Path
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = PROJECT_ROOT / "db"
 DB_PATH = DATA_DIR / "bcp.db"
-UPLOADS_DIR = DATA_DIR / "uploads"
+UPLOADS_DIR = PROJECT_ROOT / "uploads"
 # Excel data: check local Data/ first (Docker), then ../Data (local dev)
 _local_data = PROJECT_ROOT / "Data"
 _parent_data = PROJECT_ROOT.parent / "Data"

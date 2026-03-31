@@ -7,10 +7,10 @@ services:
     env_file:
       - .env
     volumes:
-      - bcp-data:/app/data
+      - bcp-db:/app/db
     restart: unless-stopped
     mem_limit: 2g
     cpus: 2
 
 volumes:
-  bcp-data:
+  bcp-db:

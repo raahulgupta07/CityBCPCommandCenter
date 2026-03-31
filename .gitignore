@@ -12,11 +12,10 @@ build/
 .env.local
 .env.production
 
-# Database (generated from Excel)
-data/bcp.db
-data/bcp.db-wal
-data/bcp.db-shm
-data/uploads/
+# Database WAL files (temp) — bcp.db itself IS committed
+db/bcp.db-wal
+db/bcp.db-shm
+uploads/
 
 # OS
 .DS_Store
