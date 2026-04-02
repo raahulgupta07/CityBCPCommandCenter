@@ -118,11 +118,17 @@ def _add_purchase(result, sector_id, date_str, region, fuel_type,
     if supplier is None and price is None:
         return
 
-    # Clean supplier name
+    # Clean and normalize supplier name
     if isinstance(supplier, (int, float)):
         supplier = None  # numeric in supplier column = data error
     if supplier:
         supplier = str(supplier).strip()
+        # Normalize known supplier name variants
+        s_upper = supplier.upper().replace(" ", "")
+        if s_upper == "DENKO":
+            supplier = "Denko"
+        elif s_upper == "MOONSUN":
+            supplier = "Moon Sun"
 
     result["purchases"].append({
         "sector_id": sector_id,

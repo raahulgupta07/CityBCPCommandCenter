@@ -38,9 +38,9 @@ render_page_header("⚙️", "Settings", "User management, email configuration, 
 
 # Tabs based on role
 if is_super:
-    tab_options = ["👥 User Management", "📧 Email Setup", "👤 Recipients", "📬 Email Log", "🔧 System"]
+    tab_options = ["👥 User Management", "📧 Email Setup", "👤 Recipients", "📬 Email Log", "🔍 Data Quality", "🔧 System"]
 else:
-    tab_options = ["👤 Recipients", "📬 Email Log"]
+    tab_options = ["👤 Recipients", "📬 Email Log", "🔍 Data Quality"]
 
 selected = ui.tabs(options=tab_options, default_value=tab_options[0], key="settings_tabs")
 
@@ -374,3 +374,80 @@ elif selected == "🔧 System" and is_super:
             with get_db() as conn:
                 conn.execute("DELETE FROM email_log")
             st.success("Cleared")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATA QUALITY (moved from page 11)
+# ═══════════════════════════════════════════════════════════════════════════
+if selected == "🔍 Data Quality":
+    st.markdown("### Data Quality Checks")
+    st.caption("Automated checks on generator specs, consumption data, and reporting gaps")
+
+    with get_db() as conn:
+        # Check 1: Generator specs vs actual
+        spec_check = pd.read_sql_query("""
+            SELECT g.site_id, s.sector_id, g.model_name, g.power_kva,
+                   g.consumption_per_hour as rated,
+                   AVG(do.daily_used_liters / NULLIF(do.gen_run_hr, 0)) as actual_per_hr,
+                   COUNT(do.date) as data_days
+            FROM generators g
+            JOIN sites s ON g.site_id = s.site_id
+            LEFT JOIN daily_operations do ON g.generator_id = do.generator_id
+                AND do.gen_run_hr > 0 AND do.daily_used_liters > 0
+            WHERE g.is_active = 1
+            GROUP BY g.generator_id
+            HAVING actual_per_hr IS NOT NULL
+        """, conn)
+
+        if not spec_check.empty:
+            spec_check["deviation"] = ((spec_check["actual_per_hr"] - spec_check["rated"]) / spec_check["rated"] * 100).round(1)
+            spec_check["status"] = spec_check["deviation"].apply(
+                lambda x: "🔴 HIGH" if abs(x) > 50 else "🟡 MEDIUM" if abs(x) > 20 else "🟢 OK"
+            )
+            issues = spec_check[spec_check["deviation"].abs() > 20]
+
+            if not issues.empty:
+                st.warning(f"**{len(issues)} generators** have consumption deviation >20% from rated specs")
+                iss_display = issues[["site_id", "sector_id", "model_name", "rated",
+                                      "actual_per_hr", "deviation", "data_days", "status"]].copy()
+                iss_display["actual_per_hr"] = iss_display["actual_per_hr"].round(1)
+                iss_display.columns = ["Site", "Sector", "Generator", "Rated L/hr",
+                                        "Actual L/hr", "Deviation %", "Data Days", "Status"]
+                st.dataframe(iss_display, use_container_width=True, hide_index=True)
+            else:
+                st.success("All generators within 20% of rated specs.")
+
+        # Check 2: Missing data / reporting gaps
+        st.markdown("#### Reporting Gaps")
+        gap_check = pd.read_sql_query("""
+            SELECT s.site_id, s.sector_id,
+                   COUNT(DISTINCT dss.date) as days_reported,
+                   MIN(dss.date) as first_report,
+                   MAX(dss.date) as last_report
+            FROM sites s
+            LEFT JOIN daily_site_summary dss ON s.site_id = dss.site_id
+            GROUP BY s.site_id
+            ORDER BY days_reported ASC
+        """, conn)
+
+        if not gap_check.empty:
+            low_report = gap_check[gap_check["days_reported"] < 3]
+            if not low_report.empty:
+                st.warning(f"**{len(low_report)} sites** have fewer than 3 days of data")
+                st.dataframe(low_report, use_container_width=True, hide_index=True)
+            else:
+                st.success("All sites have adequate reporting data.")
+
+        # Check 3: Null consumption generators
+        st.markdown("#### Generators Missing Specs")
+        null_specs = pd.read_sql_query("""
+            SELECT g.site_id, s.sector_id, g.model_name, g.power_kva, g.consumption_per_hour
+            FROM generators g
+            JOIN sites s ON g.site_id = s.site_id
+            WHERE g.is_active = 1 AND (g.consumption_per_hour IS NULL OR g.consumption_per_hour = 0)
+        """, conn)
+
+        if not null_specs.empty:
+            st.warning(f"**{len(null_specs)} generators** missing consumption rate — cannot calculate efficiency")
+            st.dataframe(null_specs, use_container_width=True, hide_index=True)
+        else:
+            st.success("All generators have consumption specs.")

@@ -93,7 +93,7 @@ def load_kpis():
         ).fetchone()[0]
 
         buf = conn.execute(
-            "SELECT AVG(days_of_buffer) FROM daily_site_summary WHERE date = ? AND days_of_buffer IS NOT NULL",
+            "SELECT SUM(spare_tank_balance) * 1.0 / NULLIF(SUM(total_daily_used), 0) FROM daily_site_summary WHERE date = ?",
             (best_date,)
         ).fetchone()[0]
 
@@ -187,15 +187,14 @@ st.markdown(f"""
 st.markdown("#### Navigate")
 
 NAV = [
-    ("📊", "Sector Overview", "Compare CP, CMHL, CFC — fuel, buffer, health", "pages/01_Sector_Overview.py"),
-    ("🏢", "Site Detail", "Drill into any site's generators and fuel status", "pages/02_Site_Detail.py"),
+    ("🎯", "Command Center", "Daily decisions, risk scores, alerts, budget", "pages/00_Command_Center.py"),
+    ("💰", "Store Economics", "Diesel survival, sales comparison, store open/close", "pages/01_Store_Economics.py"),
+    ("🔧", "Operations", "Delivery queue, generators, theft detection, maintenance", "pages/03_Operations.py"),
+    ("🏢", "Site Detail", "Deep dive into one store", "pages/02_Site_Detail.py"),
     ("⛽", "Fuel Price", "Price trends, supplier comparison, 7-day forecast", "pages/03_Fuel_Price.py"),
-    ("🛢️", "Buffer & Stockout", "Which sites run out of fuel first", "pages/04_Buffer_Risk.py"),
-    ("🔌", "Power Backup", "Generator run hours and backup coverage", "pages/05_Blackout_Monitor.py"),
-    ("⚙️", "Generator Fleet", "Efficiency, anomalies, maintenance needs", "pages/06_Generator_Fleet.py"),
-    ("🛡️", "BCP Command Center", "Complete risk overview — scores, forecasts, alerts", "pages/07_BCP_Scores.py"),
-    ("🧠", "AI Insights", "AI chat, deep analysis, ask questions", "pages/08_AI_Insights.py"),
-    ("📤", "Data Entry", "Upload Excel files and manage data", "pages/09_Data_Entry.py"),
+    ("🧠", "AI Assistant", "Ask questions, deep analysis, chat", "pages/08_AI_Insights.py"),
+    ("📤", "Data Entry", "Upload Excel files, mapping", "pages/09_Data_Entry.py"),
+    ("⚙️", "Settings", "Users, email alerts, data quality", "pages/10_Settings.py"),
 ]
 
 rows = [NAV[i:i+3] for i in range(0, len(NAV), 3)]

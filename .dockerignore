@@ -2,6 +2,8 @@ __pycache__
 *.pyc
 .git
 .DS_Store
-data/bcp.db
-data/bcp.db-wal
-data/bcp.db-shm
+db/bcp.db
+db/bcp.db-wal
+db/bcp.db-shm
+Data/
+uploads/

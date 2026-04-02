@@ -2,17 +2,89 @@
 Parser for Blackout Hr_ *.xlsx files (CP, CMHL, CFC).
 
 Handles:
-- Dynamic date columns (auto-detects from Row 2)
-- Multi-generator per site
+- Dynamic column detection from Row 2/3 headers (resilient to new columns)
+- Dynamic date sub-column detection (Gen Run Hr, Daily Used, Tank, Blackout)
+- Multi-generator per site with sector-prefixed site_ids
 - Merged cells, dashes, empty rows
 - Sector-specific variations (CMHL has no blackout_hr)
 """
+import re
 import openpyxl
 from datetime import datetime
 
 from parsers.base_parser import clean_numeric, parse_date_from_cell, validate_range
-from parsers.name_normalizer import normalize_generator_name
+from parsers.name_normalizer import normalize_generator_name, extract_kva_from_model
 from config.settings import VALIDATION, SECTORS
+
+
+# ─── Header keyword matchers (case-insensitive, partial match) ────────────
+# Static columns: scan Row 2 + Row 3 headers before the first date column
+STATIC_COL_PATTERNS = {
+    "seq":         [r"^(sr|no|seq|စဥ်)"],
+    "store_code":  [r"^store$", r"^center\s*name", r"^center\b(?!.*cost)"],
+    "site_name":   [r"cost\s*center\s*name", r"location"],
+    "cost_code":   [r"cost\s*center\s*code"],
+    "type":        [r"type.*regular", r"regular.*lng"],
+    "fuel_type":   [r"fuel\s*type", r"ဆီအမျိုးအစား", r"pd.*hsd"],
+    "supplier":    [r"purchased?\s*comp", r"ဝယ်ယူ", r"supplier"],
+    "model":       [r"machine\s*power", r"^kva$"],
+    "consumption": [r"consump.*per\s*hour", r"^liter$"],
+}
+
+# Date sub-columns: scan Row 3 headers within a date group
+DATE_SUB_PATTERNS = {
+    "gen_run_hr":          [r"gen(erator)?\s*run\s*hr"],
+    "daily_used_liters":   [r"daily\s*used"],
+    "spare_tank_balance":  [r"spare\s*tank", r"tank.*balance", r"drum\s*balance"],
+    "blackout_hr":         [r"blackout\s*hr"],
+}
+
+
+def _match_header(cell_val, patterns):
+    """Check if a cell value matches any of the given regex patterns."""
+    if cell_val is None:
+        return False
+    # Normalize: collapse all whitespace (newlines, tabs, spaces) into single space
+    text = re.sub(r'\s+', ' ', str(cell_val)).strip().lower()
+    if not text:
+        return False
+    for pat in patterns:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def _find_static_columns(ws, first_date_col):
+    """
+    Scan Row 2 and Row 3 (columns 1 to first_date_col-1) for known headers.
+    Returns dict of field_name → column_index (1-based).
+    """
+    cols = {}
+    for col_idx in range(1, first_date_col):
+        r2 = ws.cell(row=2, column=col_idx).value
+        r3 = ws.cell(row=3, column=col_idx).value
+        for field, patterns in STATIC_COL_PATTERNS.items():
+            if field in cols:
+                continue  # already found
+            if _match_header(r2, patterns) or _match_header(r3, patterns):
+                cols[field] = col_idx
+    return cols
+
+
+def _find_date_sub_offsets(ws, first_date_col, cols_per_date):
+    """
+    Scan Row 3 within the first date group to find sub-column offsets.
+    Returns dict of field_name → offset (0-based from date_col_start).
+    """
+    offsets = {}
+    for offset in range(cols_per_date):
+        val = ws.cell(row=3, column=first_date_col + offset).value
+        for field, patterns in DATE_SUB_PATTERNS.items():
+            if field in offsets:
+                continue
+            if _match_header(val, patterns):
+                offsets[field] = offset
+    return offsets
 
 
 def parse_blackout_file(filepath, sector_id):
@@ -21,29 +93,17 @@ def parse_blackout_file(filepath, sector_id):
 
     Returns:
         {
-            "generators": [
-                {
-                    "site_id": str, "site_name": str, "site_type": str,
-                    "model_name": str, "model_name_raw": str,
-                    "power_kva": float, "consumption_per_hour": float,
-                    "fuel_type": str, "supplier": str,
-                }
-            ],
-            "daily_data": [
-                {
-                    "site_id": str, "model_name_raw": str,
-                    "date": str, "gen_run_hr": float,
-                    "daily_used_liters": float, "spare_tank_balance": float,
-                    "blackout_hr": float,
-                }
-            ],
+            "generators": [{site_id, site_name, site_type, model_name, model_name_raw,
+                            power_kva, consumption_per_hour, fuel_type, supplier}],
+            "daily_data": [{site_id, model_name_raw, date, gen_run_hr,
+                            daily_used_liters, spare_tank_balance, blackout_hr}],
             "errors": [str],
             "warnings": [str],
             "dates_found": [str],
+            "columns_detected": dict,  # for debugging
         }
     """
     wb = openpyxl.load_workbook(str(filepath), data_only=True)
-    sheet_name = SECTORS[sector_id].get("sheet", sector_id)
 
     # Try to find the correct sheet
     if sector_id in wb.sheetnames:
@@ -59,10 +119,11 @@ def parse_blackout_file(filepath, sector_id):
         "errors": [],
         "warnings": [],
         "dates_found": [],
+        "columns_detected": {},
     }
 
     # ─── Step 1: Find date columns in Row 2 ──────────────────────────────
-    date_columns = []  # [(date_str, col_index_of_first_sub_column)]
+    date_columns = []  # [(date_str, col_index)]
     for col_idx in range(1, ws.max_column + 1):
         cell_val = ws.cell(row=2, column=col_idx).value
         date_str = parse_date_from_cell(cell_val)
@@ -71,50 +132,57 @@ def parse_blackout_file(filepath, sector_id):
 
     if not date_columns:
         result["errors"].append("No date columns found in Row 2")
+        wb.close()
         return result
 
     result["dates_found"] = [d[0] for d in date_columns]
-
-    # ─── Step 2: Determine sub-column layout per date ────────────────────
-    # Each date group has: Gen Run Hr, Daily Used, Spare Tank Balance, [Blackout Hr], [blank]
-    # Detect by looking at Row 3 headers after first date column
-    # Sub-columns per date: typically 5 for CP/CFC, 5 for CMHL (but no blackout data)
-
-    def _detect_cols_per_date():
-        """Detect how many columns each date group spans."""
-        if len(date_columns) >= 2:
-            return date_columns[1][1] - date_columns[0][1]
-        # Only one date — estimate from headers in row 3
-        # Count non-empty cells after first date col until end or next section
-        count = 0
-        start = date_columns[0][1]
-        for c in range(start, min(start + 7, ws.max_column + 1)):
-            val = ws.cell(row=3, column=c).value
-            if val and str(val).strip():
-                count += 1
-        return max(count + 1, 4)  # at least 4 (run hr, used, balance, blank)
-
-    cols_per_date = _detect_cols_per_date()
-
-    # ─── Step 3: Find static column positions ────────────────────────────
-    # Columns before the first date: seq#, site_name, type, fuel_type, supplier, machine_power, consumption/hr
     first_date_col = date_columns[0][1]
 
-    # Map static columns (1-based): typically cols 1-7
-    # Col 1: Seq #
-    # Col 2: Site/Center/Location Name
-    # Col 3: Type (Regular/LNG)
-    # Col 4: Fuel Type (PD/HSD)
-    # Col 5: Supplier
-    # Col 6: Machine Power / Model
-    # Col 7: Consumption per Hour
-    COL_SEQ = 1
-    COL_SITE = 2
-    COL_TYPE = 3
-    COL_FUEL = 4
-    COL_SUPPLIER = 5
-    COL_MODEL = 6
-    COL_CONSUMPTION = 7
+    # ─── Step 2: Determine sub-column layout per date ────────────────────
+    if len(date_columns) >= 2:
+        cols_per_date = date_columns[1][1] - date_columns[0][1]
+    else:
+        # Estimate from row 3 headers
+        count = 0
+        for c in range(first_date_col, min(first_date_col + 7, ws.max_column + 1)):
+            if ws.cell(row=3, column=c).value:
+                count += 1
+        cols_per_date = max(count + 1, 4)
+
+    # ─── Step 3: Dynamic column detection from headers ───────────────────
+    static_cols = _find_static_columns(ws, first_date_col)
+    date_sub_offsets = _find_date_sub_offsets(ws, first_date_col, cols_per_date)
+
+    # Store for debugging
+    result["columns_detected"] = {
+        "static": static_cols,
+        "date_sub_offsets": date_sub_offsets,
+        "first_date_col": first_date_col,
+        "cols_per_date": cols_per_date,
+    }
+
+    # Resolve static column indices with fallbacks
+    COL_SEQ = static_cols.get("seq", 1)
+    COL_SITE = static_cols.get("store_code", static_cols.get("site_name", 2))
+    COL_SITE_NAME = static_cols.get("site_name")  # full name (may be None in old format)
+    COL_TYPE = static_cols.get("type")
+    COL_FUEL = static_cols.get("fuel_type")
+    COL_SUPPLIER = static_cols.get("supplier")
+    COL_MODEL = static_cols.get("model")
+    COL_CONSUMPTION = static_cols.get("consumption")
+
+    # Has separate store code + site name columns?
+    has_separate_name = (
+        "store_code" in static_cols
+        and "site_name" in static_cols
+        and static_cols["store_code"] != static_cols["site_name"]
+    )
+
+    # Resolve date sub-column offsets with fallbacks
+    OFF_RUN_HR = date_sub_offsets.get("gen_run_hr", 0)
+    OFF_DAILY_USED = date_sub_offsets.get("daily_used_liters", 1)
+    OFF_TANK = date_sub_offsets.get("spare_tank_balance", 2)
+    OFF_BLACKOUT = date_sub_offsets.get("blackout_hr", 3)
 
     # ─── Step 4: Find data start row ─────────────────────────────────────
     data_start_row = None
@@ -130,10 +198,20 @@ def parse_blackout_file(filepath, sector_id):
 
     if data_start_row is None:
         result["errors"].append("Could not find data start row (no numeric seq# found)")
+        wb.close()
         return result
 
     # ─── Step 5: Parse each data row ─────────────────────────────────────
     seen_generators = set()
+    last_site_code = None    # Short code or name (carry forward for merged cells)
+    last_site_full_name = None  # Cost Center Name (carry forward)
+    last_cost_center_code = None  # Cost Center Code (carry forward)
+    last_site_type = "Regular"
+    _merged_tank = {}      # (site_id, date) → tank_balance
+    _merged_blackout = {}  # (site_id, date) → blackout_hr
+
+    # Resolve cost code column
+    COL_COST_CODE = static_cols.get("cost_code")
 
     for row_idx in range(data_start_row, ws.max_row + 1):
         seq_val = ws.cell(row=row_idx, column=COL_SEQ).value
@@ -146,31 +224,64 @@ def parse_blackout_file(filepath, sector_id):
         except (ValueError, TypeError):
             continue
 
-        # Read static columns
-        site_name_raw = ws.cell(row=row_idx, column=COL_SITE).value
-        if not site_name_raw or not str(site_name_raw).strip():
+        # Read static columns — handle merged cells by carrying forward
+        site_val = ws.cell(row=row_idx, column=COL_SITE).value
+        if site_val and str(site_val).strip():
+            last_site_code = str(site_val).strip()
+            # Read type
+            if COL_TYPE:
+                type_val = ws.cell(row=row_idx, column=COL_TYPE).value
+                last_site_type = str(type_val).strip() if type_val and str(type_val).strip() not in ("", "None") else "Regular"
+            # Read full name if available
+            if has_separate_name and COL_SITE_NAME:
+                ccn = ws.cell(row=row_idx, column=COL_SITE_NAME).value
+                if ccn and str(ccn).strip():
+                    last_site_full_name = str(ccn).strip()
+            # Read cost center code
+            if COL_COST_CODE:
+                cc_val = ws.cell(row=row_idx, column=COL_COST_CODE).value
+                if cc_val is not None:
+                    last_cost_center_code = str(int(cc_val)) if isinstance(cc_val, float) else str(cc_val).strip()
+
+        if not last_site_code:
             continue
 
-        site_name = str(site_name_raw).strip()
-        site_id = site_name  # Use name as ID
-        site_type = str(ws.cell(row=row_idx, column=COL_TYPE).value or "Regular").strip()
-        fuel_type_raw = ws.cell(row=row_idx, column=COL_FUEL).value
-        fuel_type = str(fuel_type_raw).strip() if fuel_type_raw and str(fuel_type_raw).strip() not in ("", "None") else None
-        supplier_raw = ws.cell(row=row_idx, column=COL_SUPPLIER).value
-        supplier = str(supplier_raw).strip() if supplier_raw and str(supplier_raw).strip() not in ("", "None") else None
-        model_raw = ws.cell(row=row_idx, column=COL_MODEL).value
-        model_name_raw = str(model_raw).strip() if model_raw else "UNKNOWN"
-        model_name = normalize_generator_name(model_name_raw)
-        consumption_raw = ws.cell(row=row_idx, column=COL_CONSUMPTION).value
-        consumption_per_hour = clean_numeric(consumption_raw)
+        # Prefix site_id with sector to avoid cross-sector collisions
+        # e.g., CP-CM19, CMHL-CMJS, CFC-SBFTY
+        site_id = f"{sector_id}-{last_site_code}"
+        site_name = last_site_full_name if has_separate_name and last_site_full_name else last_site_code
+        site_type = last_site_type
 
-        # Power KVA — sometimes in model name, sometimes consumption_per_hour IS the KVA
-        # The column header says KVA for col 6 and Liter for col 7
-        # Actually col 6 is Machine Power (model name like "KOHLER-550")
-        # and the KVA is embedded in the name or might be in consumption column
-        # Let's extract KVA from the model name
-        from parsers.name_normalizer import extract_kva_from_model
+        # Fuel type
+        fuel_type = None
+        if COL_FUEL:
+            fuel_type_raw = ws.cell(row=row_idx, column=COL_FUEL).value
+            fuel_type = str(fuel_type_raw).strip() if fuel_type_raw and str(fuel_type_raw).strip() not in ("", "None") else None
+
+        # Supplier (with normalization)
+        supplier = None
+        if COL_SUPPLIER:
+            supplier_raw = ws.cell(row=row_idx, column=COL_SUPPLIER).value
+            supplier = str(supplier_raw).strip() if supplier_raw and str(supplier_raw).strip() not in ("", "None") else None
+            if supplier:
+                s_upper = supplier.upper().replace(" ", "")
+                if s_upper == "DENKO":
+                    supplier = "Denko"
+                elif s_upper == "MOONSUN":
+                    supplier = "Moon Sun"
+
+        # Model / Machine Power
+        model_name_raw = "UNKNOWN"
+        if COL_MODEL:
+            model_raw = ws.cell(row=row_idx, column=COL_MODEL).value
+            model_name_raw = str(model_raw).strip() if model_raw else "UNKNOWN"
+        model_name = normalize_generator_name(model_name_raw)
         power_kva = extract_kva_from_model(model_name_raw)
+
+        # Consumption per hour
+        consumption_per_hour = None
+        if COL_CONSUMPTION:
+            consumption_per_hour = clean_numeric(ws.cell(row=row_idx, column=COL_CONSUMPTION).value)
 
         # Store generator info (deduplicate by site + raw model name)
         gen_key = (site_id, model_name_raw)
@@ -180,6 +291,7 @@ def parse_blackout_file(filepath, sector_id):
                 "site_id": site_id,
                 "site_name": site_name,
                 "site_type": site_type if site_type != "None" else "Regular",
+                "cost_center_code": last_cost_center_code,
                 "model_name": model_name,
                 "model_name_raw": model_name_raw,
                 "power_kva": power_kva,
@@ -190,20 +302,50 @@ def parse_blackout_file(filepath, sector_id):
 
         # ─── Read daily data for each date column ────────────────────
         for date_str, date_col_start in date_columns:
-            # Sub-columns relative to date_col_start:
-            # 0: Gen Run Hr
-            # 1: Daily Used (L)
-            # 2: Spare Tank Balance (L)
-            # 3: Blackout Hr (if has_blackout)
-            gen_run_hr = clean_numeric(ws.cell(row=row_idx, column=date_col_start).value)
-            daily_used = clean_numeric(ws.cell(row=row_idx, column=date_col_start + 1).value)
-            tank_balance = clean_numeric(ws.cell(row=row_idx, column=date_col_start + 2).value)
-            blackout = None
-            if has_blackout:
-                blackout = clean_numeric(ws.cell(row=row_idx, column=date_col_start + 3).value)
+            gen_run_hr = clean_numeric(ws.cell(row=row_idx, column=date_col_start + OFF_RUN_HR).value)
+            daily_used = clean_numeric(ws.cell(row=row_idx, column=date_col_start + OFF_DAILY_USED).value)
+            tank_balance_raw = clean_numeric(ws.cell(row=row_idx, column=date_col_start + OFF_TANK).value)
+            blackout_raw = None
+            if has_blackout and "blackout_hr" in date_sub_offsets:
+                blackout_raw = clean_numeric(ws.cell(row=row_idx, column=date_col_start + OFF_BLACKOUT).value)
 
-            # Skip row-date if all values are None
+            # Tank balance and blackout are SITE-LEVEL values (merged across generators).
+            # Store them ONLY on the first generator row that has the value.
+            # Other generator rows at the same site get None to avoid double-counting
+            # when someone does SUM() across the raw daily_operations table.
+            cache_key = (site_id, date_str)
+
+            if tank_balance_raw is not None:
+                # First row with the value — record it
+                if cache_key not in _merged_tank:
+                    _merged_tank[cache_key] = tank_balance_raw
+                    tank_balance = tank_balance_raw
+                else:
+                    # Already stored on a previous generator row — don't duplicate
+                    tank_balance = None
+            else:
+                # Merged cell (None from openpyxl) — check if first row already stored it
+                if cache_key not in _merged_tank:
+                    tank_balance = None  # genuinely missing
+                else:
+                    tank_balance = None  # already stored on first gen row
+
+            if blackout_raw is not None:
+                if cache_key not in _merged_blackout:
+                    _merged_blackout[cache_key] = blackout_raw
+                    blackout = blackout_raw
+                else:
+                    blackout = None
+            else:
+                if cache_key not in _merged_blackout:
+                    blackout = None
+                else:
+                    blackout = None
+
+            # Skip row-date if no generator-level data AND no site-level data
             if all(v is None for v in [gen_run_hr, daily_used, tank_balance, blackout]):
+                # But still keep the row if gen_run_hr or daily_used has data
+                # (a generator with 0 run hours is still valid data)
                 continue
 
             # Validate
@@ -227,17 +369,16 @@ def parse_blackout_file(filepath, sector_id):
             if blackout is not None:
                 blackout, w, rejected = validate_range(blackout, "blackout_hr", VALIDATION)
                 if rejected:
-                    # Don't skip the whole row — just nullify the bad blackout value
                     result["warnings"].append(f"Row {row_idx} ({site_name}), {date_str}: {w} — blackout value ignored, other data kept")
                     blackout = None
                 if w and not rejected:
                     warnings_for_row.append(w)
 
-            # Also capture raw blackout text as note (for incident tracking)
-            raw_blackout_val = ws.cell(row=row_idx, column=date_col_start + 3).value if has_blackout else None
-            if raw_blackout_val and isinstance(raw_blackout_val, str) and raw_blackout_val.strip():
-                result["warnings"].append(f"Row {row_idx} ({site_name}), {date_str}: Blackout note: '{raw_blackout_val.strip()}'")
-
+            # Capture raw blackout text notes
+            if has_blackout and "blackout_hr" in date_sub_offsets:
+                raw_blackout_val = ws.cell(row=row_idx, column=date_col_start + OFF_BLACKOUT).value
+                if raw_blackout_val and isinstance(raw_blackout_val, str) and raw_blackout_val.strip():
+                    result["warnings"].append(f"Row {row_idx} ({site_name}), {date_str}: Blackout note: '{raw_blackout_val.strip()}'")
 
             if warnings_for_row:
                 result["warnings"].extend(

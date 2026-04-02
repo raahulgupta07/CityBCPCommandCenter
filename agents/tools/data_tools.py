@@ -184,6 +184,86 @@ def get_buffer_status(site_id=None, max_days=None):
 
 
 @tool(
+    name="query_sales_data",
+    description="Get daily sales data, optionally filtered by sector, site name, or date range. Returns sales amounts and margins.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "sector_id": {"type": "string", "description": "Filter by sector (CP, CMHL, CFC)"},
+            "sales_site_name": {"type": "string", "description": "Filter by sales site name (partial match)"},
+            "date_from": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+            "date_to": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+        },
+    },
+)
+def query_sales_data(sector_id=None, sales_site_name=None, date_from=None, date_to=None):
+    with get_db() as conn:
+        query = """
+            SELECT date, sales_site_name, sector_id, brand,
+                   sales_amt, margin
+            FROM daily_sales WHERE 1=1
+        """
+        params = []
+        if sector_id:
+            query += " AND sector_id = ?"
+            params.append(sector_id)
+        if sales_site_name:
+            query += " AND sales_site_name LIKE ?"
+            params.append(f"%{sales_site_name}%")
+        if date_from:
+            query += " AND date >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND date <= ?"
+            params.append(date_to)
+        query += " ORDER BY date DESC LIMIT 200"
+        return pd.read_sql_query(query, conn, params=params)
+
+
+@tool(
+    name="compare_energy_vs_sales",
+    description="Compare energy (fuel) costs against sales revenue per BCP site. Shows energy cost, sales (for mapped sites), energy % of sales, and recommendation (OPEN/MONITOR/REDUCE/CLOSE). Only sites with exact name match between BCP and sales data show energy %.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "sector_id": {"type": "string", "description": "Filter by sector (optional)"},
+            "date_from": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+            "date_to": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+            "matched_only": {"type": "boolean", "description": "Only show sites with sales data (default: false)"},
+        },
+    },
+)
+def compare_energy_vs_sales(sector_id=None, date_from=None, date_to=None, matched_only=False):
+    from models.energy_cost import get_store_economics
+    result = get_store_economics(date_from=date_from, date_to=date_to)
+    if isinstance(result, pd.DataFrame) and not result.empty:
+        if sector_id:
+            result = result[result["sector_id"] == sector_id]
+        if matched_only:
+            result = result[result["has_sales"] == True]
+        return result[["site_id", "sector_id", "num_generators", "total_liters",
+                        "energy_cost", "has_sales", "total_sales", "energy_pct", "recommendation"]]
+    return {"message": "No energy data found. Upload blackout Excel files first."}
+
+
+@tool(
+    name="get_hourly_sales_pattern",
+    description="Get average sales and transaction counts by hour of day. Useful for comparing peak sales hours against generator run hours.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "sector_id": {"type": "string", "description": "Filter by sector (optional)"},
+            "date_from": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+            "date_to": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+        },
+    },
+)
+def get_hourly_sales_pattern_tool(sector_id=None, date_from=None, date_to=None):
+    from models.energy_cost import get_hourly_sales_pattern
+    return get_hourly_sales_pattern(sector_id=sector_id, date_from=date_from, date_to=date_to)
+
+
+@tool(
     name="get_sector_summary",
     description="Get aggregate KPIs per sector: total sites, generators, avg fuel use, avg buffer days.",
     parameters={
@@ -205,7 +285,7 @@ def get_sector_summary(date=None):
                    COUNT(DISTINCT dss.site_id) as sites,
                    SUM(dss.num_generators_active) as active_generators,
                    ROUND(SUM(dss.total_daily_used), 0) as total_fuel_used_liters,
-                   ROUND(AVG(dss.days_of_buffer), 1) as avg_buffer_days,
+                   ROUND(SUM(dss.spare_tank_balance) * 1.0 / NULLIF(SUM(dss.total_daily_used), 0), 1) as avg_buffer_days,
                    MIN(dss.days_of_buffer) as min_buffer_days,
                    ROUND(SUM(dss.total_gen_run_hr), 1) as total_gen_hours
             FROM daily_site_summary dss

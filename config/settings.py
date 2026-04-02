@@ -17,7 +17,7 @@ EXCEL_DATA_DIR = _local_data if _local_data.exists() else _parent_data
 # ─── Sectors ─────────────────────────────────────────────────────────────────
 SECTORS = {
     "CP": {
-        "name": "City Pharmacy",
+        "name": "City Properties",
         "color": "#2196F3",
         "has_blackout_data": True,
     },
@@ -27,7 +27,7 @@ SECTORS = {
         "has_blackout_data": False,  # CMHL sheets lack blackout hr column
     },
     "CFC": {
-        "name": "City Food Chain (Factory)",
+        "name": "City Food Concept",
         "color": "#4CAF50",
         "has_blackout_data": True,
     },
@@ -112,6 +112,87 @@ BCP_GRADES = {
     "C": {"min": 40, "label": "AT RISK", "color": "#d97706"},
     "D": {"min": 20, "label": "VULNERABLE", "color": "#ea580c"},
     "F": {"min": 0, "label": "CRITICAL", "color": "#dc2626"},
+}
+
+# ─── Energy Cost vs Sales Thresholds ──────────────────────────────────────
+ENERGY_COST = {
+    "healthy_pct": 5,       # < 5% of sales = green
+    "warning_pct": 15,      # 5-15% = yellow
+    "critical_pct": 30,     # 15-30% = red
+    "close_pct": 60,        # > 60% = recommend CLOSE (losing money)
+}
+
+# ─── Energy Decision Matrix (sector-level store open/close thresholds) ────
+ENERGY_DECISION = {
+    "full_max_pct": 5,       # <5% = FULL OPERATIONS
+    "monitor_max_pct": 15,   # 5-15% = MONITOR
+    "reduce_max_pct": 30,    # 15-30% = REDUCE HOURS
+    "critical_max_pct": 60,  # 30-60% = CRITICAL
+    # >60% = CLOSE RECOMMENDATION
+}
+
+# ─── Segment → Sector Mapping (storemaster segments to BCP sectors) ──────
+SEGMENT_SECTOR_MAP = {
+    "City Care": "CP",
+    "City Express Convenience Store": "CP",
+    "City Express Convinence Store": "CP",  # typo variant in data
+    "City Express Franchise Stores": "CP",
+    "City Mart": "CMHL",
+    "Ocean": "CMHL",
+    "Market Place": "CMHL",
+    "miniCityMart (MNC)": "CMHL",
+    "City Baby Club": "CMHL",
+    "City Book & Music": "CMHL",
+    "Popular": "CMHL",
+    "Safari": "CMHL",
+    "E COMMERCE": "CMHL",
+    "Canteen": "CFC",
+}
+
+# ─── Brand → Sector Mapping (sales brand names to BCP sectors) ───────────
+BRAND_SECTOR_MAP = {
+    "CITY CARE": "CP",
+    "CITY EXPRESS": "CP",
+    "CE FRANCHISE": "CP",
+    "YGN CITY EXPRESS": "CP",
+    "CITYMART": "CMHL",
+    "OCEAN": "CMHL",
+    "E COMMERCE OCEAN": "CMHL",
+    "CITY BABY CLUB": "CMHL",
+    "CITY BOOKS AND MUSIC": "CMHL",
+    "MARKET PLACE": "CMHL",
+    "MINI CITY MART": "CMHL",
+    "SAFARI": "CMHL",
+    "POPULAR": "CMHL",
+    "CANTEEN": "CFC",
+}
+
+# ─── Sales Excel File Config ─────────────────────────────────────────────
+SALES_FILES = {
+    "daily_sales": {
+        "sheet": "daily sales",
+        "cols": {
+            "date": "SALES_DATE",
+            "site": "Site Name",
+            "brand": "Brand",
+            "amount": "SALES_AMT",
+            "margin": "MARGIN",
+        },
+    },
+    "hourly_sales": {
+        "sheet": "hourly sales",
+        "cols": {
+            "date": "DocumentDate",
+            "site": "Site Name",
+            "brand": "Brand",
+            "hour": "SALES_HR",
+            "amount": "SALES_AMT",
+            "trans_cnt": "TRANS_CNT",
+        },
+    },
+    "store_master": {
+        "sheet": "STORE MASTER",
+    },
 }
 
 # ─── Dashboard ───────────────────────────────────────────────────────────────

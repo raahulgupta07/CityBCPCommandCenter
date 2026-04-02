@@ -4,7 +4,7 @@ Runs on every data update to generate/update alerts.
 """
 import pandas as pd
 from utils.database import get_db, create_alert
-from config.settings import ALERTS
+from config.settings import ALERTS, ENERGY_COST
 
 
 def run_all_checks(target_date=None):
@@ -34,6 +34,7 @@ def run_all_checks(target_date=None):
         results["efficiency_anomaly"] = _check_efficiency_anomaly(conn, target_date)
         results["missing_data"] = _check_missing_data(conn, target_date)
         results["sector_buffer_low"] = _check_sector_buffer_low(conn, target_date)
+        results["energy_cost_high"] = _check_energy_cost_high(conn, target_date)
 
     return results
 
@@ -233,6 +234,52 @@ def _check_sector_buffer_low(conn, date):
             metric_value=r["avg_buffer"], threshold=threshold,
         )
     return len(rows)
+
+
+def _check_energy_cost_high(conn, date):
+    """A10: sectors where energy cost exceeds warning threshold % of sales."""
+    # Check if we have sales data
+    has_sales = conn.execute("SELECT COUNT(*) FROM daily_sales WHERE date = ?", (date,)).fetchone()[0]
+    if not has_sales:
+        return 0
+
+    rows = conn.execute("""
+        SELECT s.sector_id,
+               SUM(dss.total_daily_used) as total_liters,
+               (SELECT AVG(fp.price_per_liter) FROM fuel_purchases fp
+                WHERE fp.sector_id = s.sector_id AND fp.price_per_liter IS NOT NULL) as avg_price,
+               (SELECT SUM(ds.sales_amt) FROM daily_sales ds
+                WHERE ds.sector_id = s.sector_id AND ds.date = ?) as total_sales
+        FROM daily_site_summary dss
+        JOIN sites s ON dss.site_id = s.site_id
+        WHERE dss.date = ? AND dss.total_daily_used > 0
+        GROUP BY s.sector_id
+    """, (date, date)).fetchall()
+
+    count = 0
+    for r in rows:
+        if not r["avg_price"] or not r["total_sales"] or r["total_sales"] <= 0:
+            continue
+        energy_cost = (r["total_liters"] or 0) * r["avg_price"]
+        energy_pct = (energy_cost / r["total_sales"]) * 100
+
+        if energy_pct > ENERGY_COST["critical_pct"]:
+            create_alert(
+                conn, "ENERGY_COST_HIGH", "CRITICAL",
+                f"Sector {r['sector_id']} energy cost is {energy_pct:.1f}% of sales — above {ENERGY_COST['critical_pct']}% threshold",
+                sector_id=r["sector_id"],
+                metric_value=energy_pct, threshold=ENERGY_COST["critical_pct"],
+            )
+            count += 1
+        elif energy_pct > ENERGY_COST["warning_pct"]:
+            create_alert(
+                conn, "ENERGY_COST_HIGH", "WARNING",
+                f"Sector {r['sector_id']} energy cost is {energy_pct:.1f}% of sales — above {ENERGY_COST['warning_pct']}% warning",
+                sector_id=r["sector_id"],
+                metric_value=energy_pct, threshold=ENERGY_COST["warning_pct"],
+            )
+            count += 1
+    return count
 
 
 def get_active_alerts(severity=None, sector_id=None, acknowledged=False):

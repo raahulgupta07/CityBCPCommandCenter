@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from utils.database import get_db
-from config.settings import SECTORS, ALERTS
+from config.settings import SECTORS, ALERTS, ENERGY_DECISION
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -41,8 +41,16 @@ def get_operating_modes():
 
     def _mode(row):
         buf = row["days_of_buffer"]
+        tank = row.get("spare_tank_balance") or 0
+        used = row.get("total_daily_used") or 0
+
         if buf is None or pd.isna(buf):
-            return "UNKNOWN", "No buffer data", "#6b7280"
+            # Buffer is NULL — either no usage (tank full, not running) or no data
+            if tank > 0 and used == 0:
+                return "FULL", f"Tank has {tank:,.0f}L, no consumption — idle/not running", "#16a34a"
+            if tank == 0 and used == 0:
+                return "NO DATA", "No fuel data reported", "#6b7280"
+            return "NO DATA", "Insufficient data to calculate buffer", "#6b7280"
         if buf >= 7:
             return "FULL", f"{buf:.1f} days fuel — normal operations", "#16a34a"
         if buf >= 3:
@@ -51,13 +59,45 @@ def get_operating_modes():
             return "GENERATOR_ONLY", f"{buf:.1f} days — essential services only, minimize gen usage", "#ea580c"
         return "CLOSE", f"{buf:.1f} days — recommend temporary closure, emergency fuel needed", "#dc2626"
 
+    # Get per-site energy % from store economics (mapped sites only)
+    site_energy = {}
+    try:
+        from models.energy_cost import get_store_economics
+        econ = get_store_economics()
+        if not econ.empty:
+            for _, er in econ.iterrows():
+                if er.get("has_sales") and pd.notna(er.get("energy_pct")):
+                    site_energy[er["site_id"]] = {
+                        "energy_pct": er["energy_pct"],
+                        "total_sales": er["total_sales"],
+                        "recommendation": er["recommendation"],
+                    }
+    except Exception:
+        pass
+
     results = []
     for _, row in df.iterrows():
         mode, reason, color = _mode(row)
+        site_id = row["site_id"]
+        se = site_energy.get(site_id, {})
+        epct = se.get("energy_pct")
+
+        energy_note = ""
+        if epct is not None:
+            if epct > ENERGY_DECISION["critical_max_pct"]:
+                energy_note = f"Energy cost {epct:.1f}% of sales — CLOSE recommended"
+            elif epct > ENERGY_DECISION["reduce_max_pct"]:
+                energy_note = f"Energy cost {epct:.1f}% of sales — reduce hours"
+            elif epct > ENERGY_DECISION["monitor_max_pct"]:
+                energy_note = f"Energy cost {epct:.1f}% of sales — monitor"
+
         results.append({
             **row.to_dict(),
             "mode": mode, "reason": reason, "color": color,
             "daily_fuel_cost": (row["total_daily_used"] or 0) * _get_latest_price(row["sector_id"]),
+            "energy_pct": epct,
+            "sales_revenue": se.get("total_sales"),
+            "energy_note": energy_note,
         })
 
     return pd.DataFrame(results).sort_values("days_of_buffer", na_position="last")

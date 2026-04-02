@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 from utils.database import get_db
 from utils.charts import multi_line, bar_chart, apply_layout
 from utils.smart_table import render_smart_table
-from utils.ai_insights import render_insight_panel, render_page_summary, render_forecast_insight
+from utils.ai_insights import render_insight_panel, render_page_summary, render_forecast_insight, auto_insight
 from models.fuel_price_forecast import forecast_fuel_price
 from config.settings import SECTORS
 

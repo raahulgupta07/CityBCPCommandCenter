@@ -46,13 +46,14 @@ CREATE TABLE IF NOT EXISTS sectors (
 
 -- 2. Sites
 CREATE TABLE IF NOT EXISTS sites (
-    site_id     TEXT PRIMARY KEY,
-    site_name   TEXT NOT NULL,
-    sector_id   TEXT NOT NULL REFERENCES sectors(sector_id),
-    site_type   TEXT DEFAULT 'Regular',
-    region      TEXT,
-    created_at  TEXT DEFAULT (datetime('now')),
-    updated_at  TEXT DEFAULT (datetime('now'))
+    site_id             TEXT PRIMARY KEY,
+    site_name           TEXT NOT NULL,
+    sector_id           TEXT NOT NULL REFERENCES sectors(sector_id),
+    site_type           TEXT DEFAULT 'Regular',
+    cost_center_code    TEXT,
+    region              TEXT,
+    created_at          TEXT DEFAULT (datetime('now')),
+    updated_at          TEXT DEFAULT (datetime('now'))
 );
 
 -- 3. Generators
@@ -132,7 +133,7 @@ CREATE TABLE IF NOT EXISTS upload_history (
     date_range_start    TEXT,
     date_range_end      TEXT,
     validation_errors   TEXT,
-    uploaded_at         TEXT DEFAULT (datetime('now'))
+    uploaded_at         TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
 -- 9. Alerts
@@ -219,6 +220,82 @@ CREATE TABLE IF NOT EXISTS ai_insights_cache (
     generated_at        TEXT DEFAULT (datetime('now'))
 );
 
+-- 15. Store Master (sales system reference)
+CREATE TABLE IF NOT EXISTS store_master (
+    gold_code           TEXT PRIMARY KEY,
+    pos_code            TEXT,
+    store_name          TEXT,
+    cost_center_code    TEXT,
+    cost_center_name    TEXT,
+    segment_id          INTEGER,
+    segment_name        TEXT,
+    company_code        TEXT,
+    legal_entity        TEXT,
+    channel             TEXT,
+    address_state       TEXT,
+    address_township    TEXT,
+    latitude            REAL,
+    longitude           REAL,
+    store_size          TEXT,
+    open_date           TEXT,
+    closed_date         TEXT,
+    sector_id           TEXT REFERENCES sectors(sector_id),
+    created_at          TEXT DEFAULT (datetime('now'))
+);
+
+-- 16. Site-Sales Mapping (maps sales Site Name → BCP site_id)
+CREATE TABLE IF NOT EXISTS site_sales_map (
+    sales_site_name TEXT PRIMARY KEY,
+    site_id         TEXT REFERENCES sites(site_id),
+    sector_id       TEXT REFERENCES sectors(sector_id),
+    gold_code       TEXT,
+    match_method    TEXT DEFAULT 'auto',
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+-- 17. Daily Sales (aggregated per site per day)
+CREATE TABLE IF NOT EXISTS daily_sales (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_site_name TEXT NOT NULL,
+    site_id         TEXT,
+    sector_id       TEXT,
+    date            TEXT NOT NULL,
+    brand           TEXT,
+    sales_amt       REAL DEFAULT 0,
+    margin          REAL DEFAULT 0,
+    source          TEXT DEFAULT 'excel',
+    upload_batch_id INTEGER,
+    created_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(sales_site_name, date, brand)
+);
+
+-- 18. Hourly Sales (per site per hour per day)
+CREATE TABLE IF NOT EXISTS hourly_sales (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    sales_site_name TEXT NOT NULL,
+    site_id         TEXT,
+    sector_id       TEXT,
+    date            TEXT NOT NULL,
+    hour            INTEGER NOT NULL,
+    brand           TEXT,
+    sales_amt       REAL DEFAULT 0,
+    trans_cnt       INTEGER DEFAULT 0,
+    source          TEXT DEFAULT 'excel',
+    upload_batch_id INTEGER,
+    created_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(sales_site_name, date, hour, brand)
+);
+
+-- 20. Diesel Expense Last Year (historical baseline for comparison)
+CREATE TABLE IF NOT EXISTS diesel_expense_ly (
+    cost_center_code    TEXT PRIMARY KEY,
+    sector_id           TEXT,
+    cost_center_name    TEXT,
+    yearly_expense_mmk_mil REAL,
+    daily_avg_expense_mmk  REAL,
+    pct_on_sales        REAL
+);
+
 -- Indexes for fast queries
 CREATE INDEX IF NOT EXISTS idx_daily_ops_site_date ON daily_operations(site_id, date);
 CREATE INDEX IF NOT EXISTS idx_daily_ops_date ON daily_operations(date);
@@ -226,6 +303,13 @@ CREATE INDEX IF NOT EXISTS idx_fuel_purchases_date ON fuel_purchases(date);
 CREATE INDEX IF NOT EXISTS idx_fuel_purchases_sector ON fuel_purchases(sector_id, date);
 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity, is_acknowledged);
 CREATE INDEX IF NOT EXISTS idx_daily_summary_date ON daily_site_summary(date);
+CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sales(date);
+CREATE INDEX IF NOT EXISTS idx_daily_sales_site ON daily_sales(sales_site_name, date);
+CREATE INDEX IF NOT EXISTS idx_daily_sales_site_id ON daily_sales(site_id, date);
+CREATE INDEX IF NOT EXISTS idx_hourly_sales_site_id ON hourly_sales(site_id, date);
+CREATE INDEX IF NOT EXISTS idx_hourly_sales_date ON hourly_sales(date);
+CREATE INDEX IF NOT EXISTS idx_hourly_sales_site ON hourly_sales(sales_site_name, date);
+CREATE INDEX IF NOT EXISTS idx_store_master_sector ON store_master(sector_id);
 """
 
 def init_db():
@@ -253,16 +337,64 @@ def init_db():
                 VALUES (?, ?, 'Super Admin', ?, 'super_admin', 'system')
             """, (sa_user, sa_hash, sa_email))
 
+        # Migrate: add missing columns to existing tables
+        for tbl, col, col_type in [
+            ("daily_sales", "site_id", "TEXT"),
+            ("hourly_sales", "site_id", "TEXT"),
+            ("sites", "cost_center_code", "TEXT"),
+            ("sites", "region", "TEXT"),
+        ]:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_type}")
+
+        # Seed diesel expense LY from file if table is empty
+        ly_count = conn.execute("SELECT COUNT(*) FROM diesel_expense_ly").fetchone()[0]
+        if ly_count == 0:
+            _seed_diesel_expense_ly(conn)
+
+
+def _seed_diesel_expense_ly(conn):
+    """Auto-load LY diesel expense data from Excel if file exists."""
+    from config.settings import EXCEL_DATA_DIR, PROJECT_ROOT
+    # Check multiple locations for the LY file
+    candidates = [
+        EXCEL_DATA_DIR / "Daily Avg Diesel Expense LY.xlsx",
+        PROJECT_ROOT.parent / "Data" / "Daily Avg Diesel Expense LY.xlsx",
+    ]
+    ly_file = None
+    for c in candidates:
+        if c.exists():
+            ly_file = c
+            break
+    if ly_file is None:
+        return
+    try:
+        from parsers.diesel_expense_parser import parse_diesel_expense_file
+        result = parse_diesel_expense_file(str(ly_file))
+        for r in result["records"]:
+            conn.execute("""
+                INSERT OR REPLACE INTO diesel_expense_ly
+                    (cost_center_code, sector_id, cost_center_name,
+                     yearly_expense_mmk_mil, daily_avg_expense_mmk, pct_on_sales)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (r["cost_center_code"], r["sector_id"], r["cost_center_name"],
+                  r["yearly_expense_mmk_mil"], r["daily_avg_expense_mmk"], r["pct_on_sales"]))
+    except Exception:
+        pass  # silently skip if file is malformed
+
+
 # ─── CRUD Helpers ────────────────────────────────────────────────────────────
 
-def upsert_site(conn, site_id, site_name, sector_id, site_type="Regular"):
+def upsert_site(conn, site_id, site_name, sector_id, site_type="Regular", cost_center_code=None):
     conn.execute("""
-        INSERT INTO sites (site_id, site_name, sector_id, site_type)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO sites (site_id, site_name, sector_id, site_type, cost_center_code)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(site_id) DO UPDATE SET
             site_name = excluded.site_name,
+            cost_center_code = COALESCE(excluded.cost_center_code, sites.cost_center_code),
             updated_at = datetime('now')
-    """, (site_id, site_name, sector_id, site_type))
+    """, (site_id, site_name, sector_id, site_type, cost_center_code))
 
 def upsert_generator(conn, site_id, model_name, model_name_raw, power_kva,
                       consumption_per_hour, fuel_type=None, supplier=None):
@@ -357,6 +489,96 @@ def log_upload(conn, filename, file_type, sector_id, rows_parsed,
     """, (filename, file_type, sector_id, rows_parsed, rows_accepted,
           rows_rejected, date_start, date_end, errors_json))
     return cur.lastrowid
+
+def upsert_store_master(conn, gold_code, pos_code, store_name, segment_id,
+                        segment_name, company_code, legal_entity, channel,
+                        address_state, address_township, latitude, longitude,
+                        store_size, open_date, closed_date, sector_id,
+                        cost_center_code=None, cost_center_name=None):
+    conn.execute("""
+        INSERT INTO store_master
+            (gold_code, pos_code, store_name, cost_center_code, cost_center_name,
+             segment_id, segment_name, company_code, legal_entity, channel,
+             address_state, address_township, latitude, longitude, store_size,
+             open_date, closed_date, sector_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(gold_code) DO UPDATE SET
+            store_name = excluded.store_name,
+            cost_center_code = COALESCE(excluded.cost_center_code, store_master.cost_center_code),
+            cost_center_name = COALESCE(excluded.cost_center_name, store_master.cost_center_name),
+            segment_name = excluded.segment_name,
+            sector_id = excluded.sector_id
+    """, (gold_code, pos_code, store_name, cost_center_code, cost_center_name,
+          segment_id, segment_name, company_code, legal_entity, channel,
+          address_state, address_township, latitude, longitude, store_size,
+          open_date, closed_date, sector_id))
+
+
+def upsert_daily_sale(conn, sales_site_name, sector_id, date, brand,
+                      sales_amt, margin, source="excel", upload_batch_id=None,
+                      site_id=None):
+    conn.execute("""
+        INSERT INTO daily_sales
+            (sales_site_name, site_id, sector_id, date, brand, sales_amt, margin,
+             source, upload_batch_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sales_site_name, date, brand) DO UPDATE SET
+            sales_amt = excluded.sales_amt,
+            margin = excluded.margin,
+            site_id = COALESCE(excluded.site_id, daily_sales.site_id),
+            sector_id = excluded.sector_id,
+            source = excluded.source,
+            upload_batch_id = excluded.upload_batch_id
+    """, (sales_site_name, site_id, sector_id, date, brand, sales_amt, margin,
+          source, upload_batch_id))
+
+
+def upsert_hourly_sale(conn, sales_site_name, sector_id, date, hour, brand,
+                       sales_amt, trans_cnt, source="excel", upload_batch_id=None,
+                       site_id=None):
+    conn.execute("""
+        INSERT INTO hourly_sales
+            (sales_site_name, site_id, sector_id, date, hour, brand, sales_amt,
+             trans_cnt, source, upload_batch_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(sales_site_name, date, hour, brand) DO UPDATE SET
+            sales_amt = excluded.sales_amt,
+            trans_cnt = excluded.trans_cnt,
+            site_id = COALESCE(excluded.site_id, hourly_sales.site_id),
+            sector_id = excluded.sector_id,
+            source = excluded.source,
+            upload_batch_id = excluded.upload_batch_id
+    """, (sales_site_name, site_id, sector_id, date, hour, brand, sales_amt,
+          trans_cnt, source, upload_batch_id))
+
+
+def upsert_site_sales_map(conn, sales_site_name, site_id, sector_id,
+                          gold_code=None, match_method="auto"):
+    conn.execute("""
+        INSERT INTO site_sales_map (sales_site_name, site_id, sector_id, gold_code, match_method)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(sales_site_name) DO UPDATE SET
+            site_id = excluded.site_id,
+            sector_id = excluded.sector_id,
+            gold_code = excluded.gold_code
+    """, (sales_site_name, site_id, sector_id, gold_code, match_method))
+
+
+def upsert_diesel_expense_ly(conn, cost_center_code, sector_id, cost_center_name,
+                              yearly_expense_mmk_mil, daily_avg_expense_mmk, pct_on_sales):
+    conn.execute("""
+        INSERT INTO diesel_expense_ly (cost_center_code, sector_id, cost_center_name,
+                                       yearly_expense_mmk_mil, daily_avg_expense_mmk, pct_on_sales)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cost_center_code) DO UPDATE SET
+            sector_id = excluded.sector_id,
+            cost_center_name = excluded.cost_center_name,
+            yearly_expense_mmk_mil = excluded.yearly_expense_mmk_mil,
+            daily_avg_expense_mmk = excluded.daily_avg_expense_mmk,
+            pct_on_sales = excluded.pct_on_sales
+    """, (cost_center_code, sector_id, cost_center_name,
+          yearly_expense_mmk_mil, daily_avg_expense_mmk, pct_on_sales))
+
 
 def create_alert(conn, alert_type, severity, message, site_id=None,
                   sector_id=None, metric_value=None, threshold=None):

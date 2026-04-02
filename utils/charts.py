@@ -48,7 +48,7 @@ def stacked_bar_by_sector(df, x_col, y_col, color_col="sector_id", title=None):
     fig = px.bar(
         df, x=x_col, y=y_col, color=color_col,
         color_discrete_map=SECTOR_COLORS,
-        barmode="stack",
+        barmode="stack", text_auto=True,
     )
     return apply_layout(fig, title)
 
@@ -58,8 +58,9 @@ def multi_line(df, x_col, y_col, color_col, title=None, height=400):
     fig = px.line(
         df, x=x_col, y=y_col, color=color_col,
         color_discrete_map=SECTOR_COLORS,
-        markers=True,
+        markers=True, text=y_col,
     )
+    fig.update_traces(textposition="top center", textfont_size=10)
     return apply_layout(fig, title, height)
 
 
@@ -89,7 +90,7 @@ def horizontal_bar(df, x_col, y_col, color_col=None, color_map=None, title=None)
     fig = px.bar(
         df, x=x_col, y=y_col, color=color_col,
         color_discrete_map=color_map or SECTOR_COLORS,
-        orientation="h",
+        orientation="h", text_auto=True,
     )
     fig.update_layout(yaxis=dict(autorange="reversed"))
     return apply_layout(fig, title, height=max(300, len(df) * 22))
@@ -147,7 +148,7 @@ def bar_chart(df, x_col, y_col, color_col=None, color_map=None, title=None, barm
     fig = px.bar(
         df, x=x_col, y=y_col, color=color_col,
         color_discrete_map=color_map or SECTOR_COLORS,
-        barmode=barmode,
+        barmode=barmode, text_auto=True,
     )
     return apply_layout(fig, title)
 

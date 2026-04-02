@@ -239,6 +239,11 @@ def main():
     # Seed fuel prices
     seed_fuel_prices()
 
+    # Fix DC01 site_type: should be Warehouse, not Regular
+    with get_db() as conn:
+        conn.execute("UPDATE sites SET site_type = 'Warehouse' WHERE site_id = 'DC01 Factory'")
+        print("\n  Fixed: DC01 Factory site_type → Warehouse")
+
     # Verify
     verify_database()
 

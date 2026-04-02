@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+# Set timezone to Myanmar (UTC+6:30)
+ENV TZ=Asia/Yangon
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
@@ -9,8 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt python-dotenv requests
 
 COPY . .
 
-# Pre-seed DB during build (backup copy for first-run)
-RUN mkdir -p db db_seed && python seed_database.py && cp db/bcp.db db_seed/bcp.db && rm -f db/bcp.db db/bcp.db-wal db/bcp.db-shm
+# Create DB directory (empty — user uploads all data via UI)
+RUN mkdir -p db
 
 RUN chmod +x entrypoint.sh
 

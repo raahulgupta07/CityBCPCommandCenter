@@ -70,7 +70,7 @@ def load_summary():
         buffer_stats = pd.read_sql_query("""
             SELECT s.sector_id,
                    COUNT(DISTINCT dss.site_id) as sites,
-                   ROUND(AVG(dss.days_of_buffer), 1) as avg_buffer,
+                   ROUND(SUM(dss.spare_tank_balance) * 1.0 / NULLIF(SUM(dss.total_daily_used), 0), 1) as avg_buffer,
                    SUM(CASE WHEN dss.days_of_buffer < 3 THEN 1 ELSE 0 END) as critical
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id

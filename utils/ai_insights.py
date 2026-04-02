@@ -1,5 +1,5 @@
 """
-AI Insights — Persisted in database. Shows timestamp. Refresh button replaces old.
+AI Insights — Auto-generated at top of every page. Cached in database.
 """
 import streamlit as st
 import pandas as pd
@@ -92,8 +92,90 @@ def _prepare_data(data, max_rows=50):
         info += data.head(rows_to_send).to_string(index=False)
         return info
     elif isinstance(data, dict):
-        return json.dumps(data, default=str, indent=2)
+        try:
+            from toon_format import encode as toon_encode
+            return toon_encode(data)
+        except Exception:
+            return json.dumps(data, default=str, indent=2)
     return str(data)
+
+
+def auto_insight(page_name, context_data, cache_key=None):
+    """
+    Auto-generate AI insight at the top of a page. No button needed.
+    - Checks cache first (shows instantly if cached)
+    - If no cache AND LLM available, generates in background
+    - Shows insight in a styled box
+
+    Args:
+        page_name: str — e.g., "Command Center", "Store Economics"
+        context_data: str or dict or DataFrame — the data to analyze
+        cache_key: str — unique key for caching (defaults to page_name)
+    """
+    if cache_key is None:
+        cache_key = f"auto_{page_name.lower().replace(' ', '_')}"
+
+    # Check cache
+    cached_text, cached_at = _get_cached(cache_key)
+
+    if cached_text:
+        # Show cached insight
+        _render_insight_box(cached_text, cached_at, cache_key, page_name)
+        return
+
+    # No cache — generate if LLM available
+    if not is_llm_available():
+        return
+
+    # Prepare data
+    data_str = _prepare_data(context_data) if not isinstance(context_data, str) else context_data
+
+    prompt = f"""You are an AI analyst for a diesel generator management system in Myanmar during a power crisis. Analyze ONLY the current data — do NOT compare with last year or make assumptions about historical trends.
+
+Dashboard: "{page_name}"
+
+DATA:
+{data_str[:3000]}
+
+Write a brief analysis with bullet points. Use specific site names and numbers from the data. Keep it simple — no consulting jargon, no branding.
+
+**What's happening now:**
+• 2-3 bullets — key numbers, which sites are critical, buffer status
+
+**What needs attention:**
+• 2-3 bullets — sites running low, high diesel consumption, any anomalies
+
+**What to do today:**
+• 2-3 bullets — specific actions with site names and quantities
+
+Max 150 words. Plain language. No filler."""
+
+    with st.spinner("🧠 Generating AI insight..."):
+        response, error = call_llm_simple(prompt, max_tokens=500)
+
+    if response and not error:
+        _save_cache(cache_key, "auto_insight", response)
+        _render_insight_box(response, datetime.now().strftime("%Y-%m-%d %H:%M"), cache_key, page_name)
+
+
+def _render_insight_box(text, generated_at, cache_key, page_name):
+    """Render the insight in a styled box with refresh button."""
+    col1, col2 = st.columns([9, 1])
+    with col1:
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#0f172a,#1e3a5f);border-radius:12px;padding:16px 20px;margin:0 0 16px 0;color:#e2e8f0">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="font-size:14px;font-weight:600">🧠 AI Insight — {page_name}</span>
+                <span style="font-size:10px;opacity:0.5">Generated: {generated_at}</span>
+            </div>
+            <div style="font-size:13px;line-height:1.6">{text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        if st.button("🔄", key=f"refresh_{cache_key}", help="Regenerate AI insight"):
+            _delete_cache(cache_key)
+            st.rerun()
+
 
 
 # ─── Public API ──────────────────────────────────────────────────────────
@@ -237,24 +319,18 @@ def _run_generation_streaming(pending):
 
 def _gen_deep_insight(context, data):
     data_str = _prepare_data(data)
-    return _generate(f"""You are a senior BCP analyst. Analyze this data for non-technical managers.
+    return _generate(f"""Analyze current data only. No historical comparison. Plain language with bullet points.
 
 CONTEXT: {context}
 
 DATA:
 {data_str}
 
-Write 4 short paragraphs (NO markdown headers, NO # symbols, just bold text):
+**What's happening:** 2-3 bullets with specific numbers and site names.
+**What needs attention:** 1-2 bullets — risks, anomalies, low buffer sites.
+**Action:** 2-3 specific steps — deliver X liters to Y, reduce hours at Z.
 
-**Key Finding:** Most important pattern with specific numbers and site names.
-
-**Risk:** What's dangerous? Quantify with numbers.
-
-**Why:** Root cause in one sentence.
-
-**Do This Now:** Specific action — "Deliver 500L to CMZWN by tomorrow" not vague advice.
-
-Keep it under 150 words total. No headers. No bullet lists longer than 3 items.""", 400)
+Max 150 words.""", 400)
 
 
 def _gen_deep_summary(page_name, kpi_data, charts_data):
@@ -262,26 +338,27 @@ def _gen_deep_summary(page_name, kpi_data, charts_data):
     if charts_data is not None and isinstance(charts_data, pd.DataFrame):
         combined += "\n\nAdditional data:\n" + _prepare_data(charts_data, 20)
 
-    return _generate(f"""Write a 3-sentence executive summary for {page_name}.
+    return _generate(f"""3-sentence summary for {page_name}. Current data only.
 
 DATA:
 {combined}
 
-Sentence 1: 🟢 🟡 or 🔴 status + KEY number.
-Sentence 2: Biggest RISK with site names and numbers.
-Sentence 3: ONE action leadership should take today.""", 200)
+Sentence 1: Overall status with the key number.
+Sentence 2: Biggest risk — name the site.
+Sentence 3: One action for today.""", 200)
 
 
 def _gen_deep_forecast(model_name, forecast_data):
     data_str = _prepare_data(forecast_data)
-    return _generate(f"""Analyze this {model_name} forecast for managers.
+    return _generate(f"""Forecast analysis for {model_name}. Plain language.
 
-FORECAST DATA:
+DATA:
 {data_str}
 
-**What's happening:** Direction, exact % change, today vs 7 days.
-**Business impact:** How much more/less will fuel cost in MMK?
-**Action:** Buy now or wait? Switch supplier? Be specific with timing.""", 300)
+**Trend:** Direction and numbers.
+**Next 7 days:** Predicted level and range.
+**Impact:** Cost change in MMK.
+**Action:** Buy now or wait? Quantities?""", 300)
 
 
 # ─── Display Helpers ─────────────────────────────────────────────────────
