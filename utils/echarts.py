@@ -1,6 +1,6 @@
 """
 Reusable ECharts components for CityBCPAgent.
-All charts show data labels (numbers) by default.
+All charts use formatted tooltips. Labels shown only for small datasets.
 Uses streamlit-echarts for rendering.
 """
 from streamlit_echarts import st_echarts
@@ -20,9 +20,49 @@ DEFAULT_TOOLTIP = {
     "trigger": "axis",
     "axisPointer": {"type": "shadow"},
     "textStyle": {"fontSize": 12},
+    "confine": True,
 }
 
 DEFAULT_GRID = {"left": "8%", "right": "8%", "bottom": "12%", "top": "15%", "containLabel": True}
+
+
+def _clean(data):
+    """Sanitise a list for ECharts: replace None/NaN with 0."""
+    if not data:
+        return []
+    cleaned = []
+    for v in data:
+        if v is None:
+            cleaned.append(0)
+        elif isinstance(v, float) and (v != v):  # NaN check
+            cleaned.append(0)
+        else:
+            cleaned.append(v)
+    return cleaned
+
+
+def _fmt_val(v):
+    """Format a number for display: 1234567→'1.2M', 12345→'12.3K'."""
+    if v is None or v == 0:
+        return "0"
+    a = abs(v)
+    if a >= 1e9:
+        return f"{v/1e9:.1f}B"
+    if a >= 1e6:
+        return f"{v/1e6:.1f}M"
+    if a >= 1e4:
+        return f"{v/1e3:.1f}K"
+    if a >= 1e3:
+        return f"{v:,.0f}"
+    if a < 1 and a > 0:
+        return f"{v:.2f}"
+    return f"{v:,.1f}"
+
+
+def _make_rich_data(values):
+    """Convert values to [{value: num, name: 'formatted'}] for rich tooltip display."""
+    cleaned = _clean(values)
+    return [{"value": v, "name": _fmt_val(v)} for v in cleaned]
 
 
 def _fmt(val, unit=""):
@@ -38,6 +78,11 @@ def _fmt(val, unit=""):
     return f"{val:,.0f}{unit}"
 
 
+# Tooltip format string — ECharts built-in: {a}=series, {b}=category, {c}=value
+# For axis trigger, use a list format
+_TOOLTIP_FMT = "{b}<br/>{a}: <b>{c}</b>"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # CHART BUILDERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -45,19 +90,22 @@ def _fmt(val, unit=""):
 def bar_chart(categories, values, title="", color="#3b82f6", unit="",
               height=400, horizontal=False, key=None):
     """Simple bar chart with numbers on each bar."""
-    axis_type = "category"
+    categories = _clean(categories); values = _clean(values)
+    if not categories or not values: return
+    # Show labels only for small datasets
+    show_lbl = len(values) <= 15
     if horizontal:
         option = {
             "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
             "tooltip": {**DEFAULT_TOOLTIP, "trigger": "axis"},
             "grid": DEFAULT_GRID,
             "xAxis": {"type": "value"},
-            "yAxis": {"type": axis_type, "data": categories, "axisLabel": {"fontSize": 11}},
+            "yAxis": {"type": "category", "data": categories, "axisLabel": {"fontSize": 11}},
             "series": [{
                 "type": "bar",
-                "data": values,
-                "label": {"show": True, "position": "right",
-                          "fontSize": 11, "color": "#374151"},
+                "data": _make_rich_data(values),
+                "label": {"show": show_lbl, "position": "right",
+                          "fontSize": 11, "color": "#374151", "formatter": "{@name}"},
                 "itemStyle": {"color": color},
             }],
         }
@@ -66,13 +114,14 @@ def bar_chart(categories, values, title="", color="#3b82f6", unit="",
             "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
             "tooltip": {**DEFAULT_TOOLTIP},
             "grid": DEFAULT_GRID,
-            "xAxis": {"type": axis_type, "data": categories,
+            "xAxis": {"type": "category", "data": categories,
                       "axisLabel": {"rotate": 30 if len(categories) > 6 else 0, "fontSize": 11}},
             "yAxis": {"type": "value"},
             "series": [{
                 "type": "bar",
-                "data": values,
-                "label": {"show": True, "position": "top", "fontSize": 11, "color": "#374151"},
+                "data": _make_rich_data(values),
+                "label": {"show": show_lbl, "position": "top", "fontSize": 11,
+                          "color": "#374151", "formatter": "{@name}"},
                 "itemStyle": {"color": color},
             }],
         }
@@ -83,13 +132,17 @@ def grouped_bar(categories, series_list, title="", height=400, key=None):
     """
     Grouped bar chart. series_list = [{"name": str, "data": list, "color": str}, ...]
     """
+    categories = _clean(categories)
+    if not categories: return
+    show_lbl = len(categories) <= 8
     series = []
     for s in series_list:
         series.append({
             "name": s["name"],
             "type": "bar",
-            "data": s["data"],
-            "label": {"show": True, "position": "top", "fontSize": 10, "color": "#374151"},
+            "data": _make_rich_data(s["data"]),
+            "label": {"show": show_lbl, "position": "top", "fontSize": 10,
+                      "color": "#374151", "formatter": "{@name}"},
             "itemStyle": {"color": s.get("color", PALETTE[len(series) % len(PALETTE)])},
         })
     option = {
@@ -109,14 +162,17 @@ def stacked_bar(categories, series_list, title="", height=400, key=None):
     """
     Stacked bar chart. series_list = [{"name": str, "data": list, "color": str}, ...]
     """
+    categories = _clean(categories)
+    if not categories: return
     series = []
     for s in series_list:
         series.append({
             "name": s["name"],
             "type": "bar",
             "stack": "total",
-            "data": s["data"],
-            "label": {"show": True, "position": "inside", "fontSize": 10, "color": "#fff"},
+            "data": _make_rich_data(s["data"]),
+            "label": {"show": True, "position": "inside", "fontSize": 10,
+                      "color": "#fff", "formatter": "{@name}"},
             "itemStyle": {"color": s.get("color", PALETTE[len(series) % len(PALETTE)])},
             "emphasis": {"focus": "series"},
         })
@@ -139,14 +195,19 @@ def line_chart(categories, series_list, title="", height=400,
     Line chart. series_list = [{"name": str, "data": list, "color": str}, ...]
     mark_lines = [{"value": float, "label": str, "color": str}, ...]
     """
+    categories = _clean(categories)
+    if not categories: return
+    n_series = len(series_list)
+    show_lbl = len(categories) <= 10 and n_series <= 2
     series = []
     for s in series_list:
+        sdata = _clean(s["data"])
         entry = {
             "name": s["name"],
             "type": "line",
-            "data": s["data"],
-            "label": {"show": len(s["data"]) <= 15, "position": "top",
-                      "fontSize": 10, "color": "#374151"},
+            "data": _make_rich_data(sdata),
+            "label": {"show": show_lbl, "position": "top",
+                      "fontSize": 10, "color": "#374151", "formatter": "{@name}"},
             "symbol": "circle",
             "symbolSize": 6,
             "lineStyle": {"width": 2},
@@ -179,6 +240,9 @@ def dual_axis_chart(categories, bar_series, line_series, title="",
                     bar_name="", line_name="", bar_color="#3b82f6",
                     line_color="#ef4444", height=400, key=None):
     """Bar + Line on dual Y axes, both with numbers."""
+    categories = _clean(categories); bar_series = _clean(bar_series); line_series = _clean(line_series)
+    if not categories: return
+    show_lbl = len(categories) <= 12
     option = {
         "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
         "tooltip": {**DEFAULT_TOOLTIP},
@@ -191,13 +255,15 @@ def dual_axis_chart(categories, bar_series, line_series, title="",
         ],
         "series": [
             {
-                "name": bar_name, "type": "bar", "data": bar_series,
-                "label": {"show": True, "position": "top", "fontSize": 10, "color": "#374151"},
+                "name": bar_name, "type": "bar", "data": _make_rich_data(bar_series),
+                "label": {"show": show_lbl, "position": "top", "fontSize": 10,
+                          "color": "#374151", "formatter": "{@name}"},
                 "itemStyle": {"color": bar_color},
             },
             {
-                "name": line_name, "type": "line", "yAxisIndex": 1, "data": line_series,
-                "label": {"show": True, "position": "top", "fontSize": 10, "color": "#374151"},
+                "name": line_name, "type": "line", "yAxisIndex": 1,
+                "data": _make_rich_data(line_series),
+                "label": {"show": False},
                 "symbol": "circle", "symbolSize": 6,
                 "lineStyle": {"width": 2, "color": line_color},
                 "itemStyle": {"color": line_color},
@@ -212,6 +278,7 @@ def pie_chart(data, title="", height=350, key=None):
     Pie chart with name + value + percentage.
     data = [{"name": str, "value": float}, ...] or [{"name": str, "value": float, "color": str}, ...]
     """
+    if not data: return
     colors = [d.get("color", PALETTE[i % len(PALETTE)]) for i, d in enumerate(data)]
     option = {
         "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
@@ -254,8 +321,6 @@ def scatter_chart(data, title="", x_name="", y_name="", height=400, key=None):
             "data": [[d[0], d[1]] for d in group["data"]],
             "symbolSize": 12,
             "itemStyle": {"color": color},
-            "label": {"show": True, "position": "right", "fontSize": 10,
-                      "formatter": lambda p: group["data"][p["dataIndex"]][3] if p["dataIndex"] < len(group["data"]) else ""},
         })
     option = {
         "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
@@ -270,9 +335,14 @@ def scatter_chart(data, title="", x_name="", y_name="", height=400, key=None):
 
 def horizontal_bar(categories, values, title="", colors=None, height=None, key=None):
     """Horizontal bar chart with values on right."""
+    categories = _clean(categories); values = _clean(values)
+    if not categories or not values: return
     if height is None:
         height = max(350, len(categories) * 28)
     item_colors = colors if colors else [PALETTE[0]] * len(values)
+    rich_data = []
+    for v, c in zip(values, item_colors):
+        rich_data.append({"value": v, "name": _fmt_val(v), "itemStyle": {"color": c}})
     option = {
         "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
         "tooltip": {**DEFAULT_TOOLTIP, "trigger": "axis"},
@@ -281,27 +351,9 @@ def horizontal_bar(categories, values, title="", colors=None, height=None, key=N
         "yAxis": {"type": "category", "data": categories, "axisLabel": {"fontSize": 11}},
         "series": [{
             "type": "bar",
-            "data": [{"value": v, "itemStyle": {"color": c}} for v, c in zip(values, item_colors)],
-            "label": {"show": True, "position": "right", "fontSize": 11, "color": "#374151"},
-        }],
-    }
-    st_echarts(option, height=f"{height}px", key=key)
-
-
-def gauge_chart(value, title="", max_val=100, thresholds=None, height=250, key=None):
-    """Gauge chart for single KPI."""
-    if thresholds is None:
-        thresholds = [[0.3, "#dc2626"], [0.7, "#d97706"], [1, "#16a34a"]]
-    option = {
-        "series": [{
-            "type": "gauge",
-            "startAngle": 200, "endAngle": -20,
-            "min": 0, "max": max_val,
-            "axisLine": {"lineStyle": {"width": 20, "color": thresholds}},
-            "pointer": {"width": 5},
-            "title": {"text": title, "offsetCenter": [0, "80%"], "fontSize": 13},
-            "detail": {"formatter": f"{value:.1f}", "fontSize": 22, "offsetCenter": [0, "50%"]},
-            "data": [{"value": value}],
+            "data": rich_data,
+            "label": {"show": True, "position": "right", "fontSize": 11,
+                      "color": "#374151", "formatter": "{@name}"},
         }],
     }
     st_echarts(option, height=f"{height}px", key=key)

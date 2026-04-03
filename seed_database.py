@@ -67,7 +67,10 @@ def seed_blackout_file(file_key, file_config):
         gen_id_map = {}  # (site_id, model_name_raw) -> generator_id
         for gen in result["generators"]:
             upsert_site(conn, gen["site_id"], gen["site_name"],
-                       sector_id, gen["site_type"])
+                       sector_id, gen["site_type"],
+                       cost_center_code=gen.get("cost_center_code"),
+                       business_sector=gen.get("business_sector"),
+                       company=gen.get("company"))
             gen_id = upsert_generator(
                 conn, gen["site_id"], gen["model_name"],
                 gen["model_name_raw"], gen["power_kva"],

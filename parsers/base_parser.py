@@ -1,7 +1,7 @@
 """
 Shared parsing utilities — value cleaning and validation.
 """
-from datetime import datetime
+from datetime import datetime, time as dt_time
 
 
 def clean_value(val):
@@ -11,6 +11,9 @@ def clean_value(val):
     """
     if val is None:
         return None
+    # Handle time objects (e.g. 01:15:00 → 1.25 hours)
+    if isinstance(val, dt_time):
+        return val.hour + val.minute / 60.0 + val.second / 3600.0
     if isinstance(val, str):
         stripped = val.strip()
         if stripped in ("", "-", "X", "x", "#DIV/0!", "N/A", "n/a"):
@@ -29,6 +32,9 @@ def clean_value(val):
 
 def clean_numeric(val):
     """Clean a value and return float or None."""
+    # Handle time objects directly before clean_value
+    if isinstance(val, dt_time):
+        return val.hour + val.minute / 60.0 + val.second / 3600.0
     cleaned = clean_value(val)
     if cleaned is None:
         return None

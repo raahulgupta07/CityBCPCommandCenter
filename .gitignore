@@ -12,10 +12,18 @@ build/
 .env.local
 .env.production
 
-# Database WAL files (temp) — bcp.db itself IS committed
+# Database (starts empty, user uploads data)
+db/bcp.db
 db/bcp.db-wal
 db/bcp.db-shm
+
+# Uploads and data files
 uploads/
+Data/
+Data2/
+
+# Utility scripts
+refresh_data.py
 
 # OS
 .DS_Store

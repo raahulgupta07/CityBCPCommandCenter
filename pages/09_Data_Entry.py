@@ -69,8 +69,11 @@ def detect_file_type(filepath):
             _df = _pd.read_excel(str(filepath), sheet_name=0, nrows=2)
             if "Manual Data" in _df.columns and "SAP Cost Center" in _df.columns:
                 return "site_mapping", None
-            # Diesel expense LY file: has "Daily Average Diesel Exp" column
+            # Diesel expense LY file: has "Daily Average Diesel" in columns or row 2
             if any("daily average diesel" in str(c).lower() for c in _df.columns):
+                return "diesel_expense_ly", None
+            # Also check row values (header might be in row 2 if row 1 is a title)
+            if any("daily average diesel" in str(v).lower() for v in _df.iloc[0].values if v is not None):
                 return "diesel_expense_ly", None
         except Exception:
             pass
@@ -103,6 +106,8 @@ def detect_file_type(filepath):
             return "blackout_cmhl", "CMHL"
         if "cfc" in sheets:
             return "blackout_cfc", "CFC"
+        if "pg" in sheets:
+            return "blackout_pg", "PG"
 
         # Fallback: check first sheet name
         first = sheets[0] if sheets else ""
@@ -112,6 +117,8 @@ def detect_file_type(filepath):
             return "blackout_cmhl", "CMHL"
         if "cfc" in first:
             return "blackout_cfc", "CFC"
+        if "pg" in first:
+            return "blackout_pg", "PG"
 
     except Exception:
         pass
@@ -293,7 +300,9 @@ def process_file(tmp_path, filename):
             gen_id_map = {}
             for gen in gens:
                 upsert_site(conn, gen["site_id"], gen["site_name"], sector_id, gen["site_type"],
-                            cost_center_code=gen.get("cost_center_code"))
+                            cost_center_code=gen.get("cost_center_code"),
+                            business_sector=gen.get("business_sector"),
+                            company=gen.get("company"))
                 gen_id = upsert_generator(
                     conn, gen["site_id"], gen["model_name"],
                     gen["model_name_raw"], gen["power_kva"],
@@ -563,6 +572,7 @@ if selected == "📁 Upload Files":
         "blackout_cmhl": ("blackout_cmhl",),
         "blackout_cp": ("blackout_cp",),
         "blackout_cfc": ("blackout_cfc",),
+        "blackout_pg": ("blackout_pg",),
         "fuel_price": ("fuel_price",),
         "daily_sales": ("daily_sales", "combo_sales"),
         "hourly_sales": ("hourly_sales",),
@@ -577,6 +587,7 @@ if selected == "📁 Upload Files":
         "blackout_cmhl": "CMHL Blackout (sheet 'CMHL')",
         "blackout_cp": "CP Blackout (sheet 'CP')",
         "blackout_cfc": "CFC Blackout (sheet 'CFC')",
+        "blackout_pg": "PG Blackout (sheet 'PG')",
         "fuel_price": "Daily Fuel Price (sheets CMHL/CP/CFC/PG)",
         "daily_sales": "Daily Sales (sheet 'daily sales')",
         "hourly_sales": "Hourly Sales (sheet 'hourly sales')",
@@ -615,6 +626,7 @@ if selected == "📁 Upload Files":
         "blackout_cmhl": "SELECT do.date, do.site_id, g.model_name, do.gen_run_hr, do.daily_used_liters, do.spare_tank_balance FROM daily_operations do JOIN generators g ON do.generator_id = g.generator_id JOIN sites s ON do.site_id = s.site_id WHERE s.sector_id = 'CMHL' ORDER BY do.date DESC, do.site_id",
         "blackout_cp": "SELECT do.date, do.site_id, g.model_name, do.gen_run_hr, do.daily_used_liters, do.spare_tank_balance FROM daily_operations do JOIN generators g ON do.generator_id = g.generator_id JOIN sites s ON do.site_id = s.site_id WHERE s.sector_id = 'CP' ORDER BY do.date DESC, do.site_id",
         "blackout_cfc": "SELECT do.date, do.site_id, g.model_name, do.gen_run_hr, do.daily_used_liters, do.spare_tank_balance FROM daily_operations do JOIN generators g ON do.generator_id = g.generator_id JOIN sites s ON do.site_id = s.site_id WHERE s.sector_id = 'CFC' ORDER BY do.date DESC, do.site_id",
+        "blackout_pg": "SELECT do.date, do.site_id, g.model_name, do.gen_run_hr, do.daily_used_liters, do.spare_tank_balance FROM daily_operations do JOIN generators g ON do.generator_id = g.generator_id JOIN sites s ON do.site_id = s.site_id WHERE s.sector_id = 'PG' ORDER BY do.date DESC, do.site_id",
         "fuel_price": "SELECT date, sector_id, region, supplier, fuel_type, quantity_liters, price_per_liter FROM fuel_purchases ORDER BY date DESC",
         "combo_sales": None,  # Special handling — shows multiple tables
         "diesel_expense_ly": "SELECT cost_center_code, sector_id, cost_center_name, daily_avg_expense_mmk, pct_on_sales FROM diesel_expense_ly ORDER BY daily_avg_expense_mmk DESC",
@@ -659,6 +671,10 @@ if selected == "📁 Upload Files":
             "blackout_cfc": [
                 "DELETE FROM daily_operations WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='CFC')",
                 "DELETE FROM daily_site_summary WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='CFC')",
+            ],
+            "blackout_pg": [
+                "DELETE FROM daily_operations WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='PG')",
+                "DELETE FROM daily_site_summary WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='PG')",
             ],
             "fuel_price": [
                 "DELETE FROM fuel_purchases",
@@ -714,7 +730,7 @@ if selected == "📁 Upload Files":
                     os.unlink(tmp_path)
 
                     if "✅" in result["status"]:
-                        if expected_type in ("blackout_cmhl", "blackout_cp", "blackout_cfc", "fuel_price"):
+                        if expected_type in ("blackout_cmhl", "blackout_cp", "blackout_cfc", "blackout_pg", "fuel_price"):
                             try:
                                 run_all_checks()
                             except Exception:
@@ -826,6 +842,12 @@ if selected == "📁 Upload Files":
             "🍞 CFC — City Food Concept",
             "2 stores (Seasons Bakery Factory, Mandalay). Sheet: 'CFC'. 4 generators at SBFTY, 1 at BMDY.",
             "blackout_cfc", "bl_cfc",
+        )
+
+        _upload_slot(
+            "⚙️ PG — PG Sector",
+            "PG sector sites and generators. Sheet: 'PG'. Has Sector, Company, Site, Gen Run Hr, Daily Used, Spare Tank Balance, Blackout Hr.",
+            "blackout_pg", "bl_pg",
         )
 
         # Fuel Price

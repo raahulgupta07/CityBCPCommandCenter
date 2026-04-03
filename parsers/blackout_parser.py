@@ -20,15 +20,17 @@ from config.settings import VALIDATION, SECTORS
 # ─── Header keyword matchers (case-insensitive, partial match) ────────────
 # Static columns: scan Row 2 + Row 3 headers before the first date column
 STATIC_COL_PATTERNS = {
-    "seq":         [r"^(sr|no|seq|စဥ်)"],
-    "store_code":  [r"^store$", r"^center\s*name", r"^center\b(?!.*cost)"],
-    "site_name":   [r"cost\s*center\s*name", r"location"],
-    "cost_code":   [r"cost\s*center\s*code"],
-    "type":        [r"type.*regular", r"regular.*lng"],
-    "fuel_type":   [r"fuel\s*type", r"ဆီအမျိုးအစား", r"pd.*hsd"],
-    "supplier":    [r"purchased?\s*comp", r"ဝယ်ယူ", r"supplier"],
-    "model":       [r"machine\s*power", r"^kva$"],
-    "consumption": [r"consump.*per\s*hour", r"^liter$"],
+    "seq":              [r"^(sr|no|seq|စဥ်)"],
+    "business_sector":  [r"^sector$"],
+    "company":          [r"^company$"],
+    "store_code":       [r"^store$", r"^site$", r"^center\s*name", r"^center\b(?!.*cost)"],
+    "site_name":        [r"cost\s*center\s*name", r"location"],
+    "cost_code":        [r"cost\s*center\s*code"],
+    "type":             [r"type.*regular", r"regular.*lng"],
+    "fuel_type":        [r"fuel\s*type", r"ဆီအမျိုးအစား", r"pd.*hsd"],
+    "supplier":         [r"purchased?\s*comp", r"ဝယ်ယူ", r"supplier"],
+    "model":            [r"machine\s*power", r"^kva$"],
+    "consumption":      [r"consump.*per\s*hour", r"^liter$"],
 }
 
 # Date sub-columns: scan Row 3 headers within a date group
@@ -111,7 +113,9 @@ def parse_blackout_file(filepath, sector_id):
     else:
         ws = wb[wb.sheetnames[0]]
 
-    has_blackout = SECTORS[sector_id]["has_blackout_data"]
+    # Auto-detect blackout column from Excel rather than relying on config
+    # Config is kept as fallback but actual column detection overrides it
+    has_blackout = True  # Always try to detect; if column not found, offset won't exist
 
     result = {
         "generators": [],
@@ -207,11 +211,15 @@ def parse_blackout_file(filepath, sector_id):
     last_site_full_name = None  # Cost Center Name (carry forward)
     last_cost_center_code = None  # Cost Center Code (carry forward)
     last_site_type = "Regular"
+    last_business_sector = None  # Business sector from Excel col (carry forward)
+    last_company = None          # Company from Excel col (carry forward)
     _merged_tank = {}      # (site_id, date) → tank_balance
     _merged_blackout = {}  # (site_id, date) → blackout_hr
 
     # Resolve cost code column
     COL_COST_CODE = static_cols.get("cost_code")
+    COL_BIZ_SECTOR = static_cols.get("business_sector")
+    COL_COMPANY = static_cols.get("company")
 
     for row_idx in range(data_start_row, ws.max_row + 1):
         seq_val = ws.cell(row=row_idx, column=COL_SEQ).value
@@ -225,6 +233,16 @@ def parse_blackout_file(filepath, sector_id):
             continue
 
         # Read static columns — handle merged cells by carrying forward
+        # Business sector + company (carry forward for merged cells)
+        if COL_BIZ_SECTOR:
+            bsv = ws.cell(row=row_idx, column=COL_BIZ_SECTOR).value
+            if bsv and str(bsv).strip() and str(bsv).strip().lower() not in ("", "none"):
+                last_business_sector = str(bsv).strip()
+        if COL_COMPANY:
+            cpv = ws.cell(row=row_idx, column=COL_COMPANY).value
+            if cpv and str(cpv).strip() and str(cpv).strip().lower() not in ("", "none"):
+                last_company = str(cpv).strip()
+
         site_val = ws.cell(row=row_idx, column=COL_SITE).value
         if site_val and str(site_val).strip():
             last_site_code = str(site_val).strip()
@@ -292,6 +310,8 @@ def parse_blackout_file(filepath, sector_id):
                 "site_name": site_name,
                 "site_type": site_type if site_type != "None" else "Regular",
                 "cost_center_code": last_cost_center_code,
+                "business_sector": last_business_sector,
+                "company": last_company,
                 "model_name": model_name,
                 "model_name_raw": model_name_raw,
                 "power_kva": power_kva,

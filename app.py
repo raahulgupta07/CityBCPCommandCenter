@@ -187,12 +187,8 @@ st.markdown(f"""
 st.markdown("#### Navigate")
 
 NAV = [
-    ("🎯", "Command Center", "Daily decisions, risk scores, alerts, budget", "pages/00_Command_Center.py"),
-    ("💰", "Store Economics", "Diesel survival, sales comparison, store open/close", "pages/01_Store_Economics.py"),
-    ("🔧", "Operations", "Delivery queue, generators, theft detection, maintenance", "pages/03_Operations.py"),
-    ("🏢", "Site Detail", "Deep dive into one store", "pages/02_Site_Detail.py"),
-    ("⛽", "Fuel Price", "Price trends, supplier comparison, 7-day forecast", "pages/03_Fuel_Price.py"),
-    ("🧠", "AI Assistant", "Ask questions, deep analysis, chat", "pages/08_AI_Insights.py"),
+    ("🛡️", "BCP Command Center", "Group > Sector > Site drill-down, KPIs, operations, fuel price, dictionary", "pages/05_BCP_Command_Center.py"),
+    ("💬", "BCP Chat", "AI-powered assistant for BCP data", "pages/08_BCP_Chat.py"),
     ("📤", "Data Entry", "Upload Excel files, mapping", "pages/09_Data_Entry.py"),
     ("⚙️", "Settings", "Users, email alerts, data quality", "pages/10_Settings.py"),
 ]

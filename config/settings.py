@@ -24,7 +24,7 @@ SECTORS = {
     "CMHL": {
         "name": "City Mart Holdings Ltd",
         "color": "#FF9800",
-        "has_blackout_data": False,  # CMHL sheets lack blackout hr column
+        "has_blackout_data": True,
     },
     "CFC": {
         "name": "City Food Concept",
@@ -34,7 +34,7 @@ SECTORS = {
     "PG": {
         "name": "PG Sector",
         "color": "#9C27B0",
-        "has_blackout_data": False,
+        "has_blackout_data": True,
     },
 }
 
@@ -66,6 +66,12 @@ EXCEL_FILES = {
         "sheet": "CFC",
         "sector_id": "CFC",
         "site_col_name": "Store Name",
+    },
+    "blackout_pg": {
+        "filename": "Blackout Hr_ PG.xlsx",
+        "sheet": "PG",
+        "sector_id": "PG",
+        "site_col_name": "Site",
     },
     "fuel_price": {
         "filename": "Daily Fuel Price.xlsx",
@@ -120,6 +126,50 @@ ENERGY_COST = {
     "warning_pct": 15,      # 5-15% = yellow
     "critical_pct": 30,     # 15-30% = red
     "close_pct": 60,        # > 60% = recommend CLOSE (losing money)
+}
+
+# ─── Heat Map Thresholds (4-color: Green / Yellow / Amber / Red) ─────────
+HEATMAP_THRESHOLDS = {
+    "diesel_price": {
+        "label": "Diesel Price (MMK/L)",
+        "green_max": 3500,      # < 3,501 = green
+        "yellow_max": 5000,     # 3,501–5,000 = yellow
+        "amber_max": 8000,      # 5,001–8,000 = amber
+        # > 8,000 = red
+        "reverse": False,       # higher = worse
+    },
+    "blackout_hr": {
+        "label": "Blackout Hr",
+        "green_max": 4,         # < 4 = green
+        "yellow_max": 8,        # 4–8 = yellow
+        "amber_max": 12,        # 8–12 = amber
+        # > 12 = red
+        "reverse": False,
+    },
+    "expense_pct": {
+        "label": "Expense % on Sale",
+        "green_max": 0.9,       # < 0.9% = green
+        "yellow_max": 1.5,      # 0.9–1.5% = yellow
+        "amber_max": 3.0,       # 1.5–3% = amber
+        # > 3% = red
+        "reverse": False,
+    },
+    "buffer_days": {
+        "label": "Buffer Stock Days",
+        "green_min": 7,         # >= 7 = green
+        "yellow_min": 5,        # 5–7 = yellow
+        "amber_min": 3,         # 3–5 = amber
+        # < 3 = red
+        "reverse": True,        # lower = worse (opposite of others)
+    },
+}
+
+HEATMAP_COLORS = {
+    "green":  "#22c55e",
+    "yellow": "#eab308",
+    "amber":  "#f97316",
+    "red":    "#ef4444",
+    "gray":   "#9ca3af",   # no data
 }
 
 # ─── Energy Decision Matrix (sector-level store open/close thresholds) ────

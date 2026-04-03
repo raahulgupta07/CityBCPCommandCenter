@@ -44,64 +44,70 @@ def parse_fuel_price_file(filepath):
             result["warnings"].append(f"Unknown sheet '{sheet_name}', skipping")
             continue
 
-        # Layout:
-        # Col 1: Sector
-        # Col 2: Date
-        # YGN region:
-        #   Col 3: Supplier (PD)
-        #   Col 4: Qty (L)
-        #   Col 5: Price PD
-        #   Col 6: Supplier (HSD)
-        #   Col 7: Qty (L)
-        #   Col 8: Price HSD
-        # MDY region:
-        #   Col 9: Supplier (PD)
-        #   Col 10: Qty (L)
-        #   Col 11: Price PD
-        #   Col 12: Supplier (HSD)
-        #   Col 13: Qty (L)
-        #   Col 14: Price HSD
+        # Detect layout: find which column has the date
+        # Old format: Sector(1), Date(2), data from col 3
+        # New format: Sector(1), Company(2), Date(3), data from col 4
+        date_col = None
+        data_offset = 0
+        for r in range(3, min(10, ws.max_row + 1)):
+            # Try col 2 first (old format)
+            d2 = parse_date_from_cell(ws.cell(row=r, column=2).value)
+            if d2:
+                date_col = 2
+                data_offset = 0  # data starts at col 3
+                break
+            # Try col 3 (new format with Company column)
+            d3 = parse_date_from_cell(ws.cell(row=r, column=3).value)
+            if d3:
+                date_col = 3
+                data_offset = 1  # data starts at col 4
+                break
 
-        # Find data start row (first row where col 2 has a date)
+        if date_col is None:
+            date_col = 3  # default to new format
+            data_offset = 1
+
+        # Layout (with offset):
+        # YGN PD: cols 3+off, 4+off, 5+off (Supplier, Qty, Price)
+        # YGN HSD: cols 6+off, 7+off, 8+off
+        # MDY PD: cols 9+off, 10+off, 11+off
+        # MDY HSD: cols 12+off, 13+off, 14+off
+
         data_start = None
         for r in range(3, min(10, ws.max_row + 1)):
-            date_val = parse_date_from_cell(ws.cell(row=r, column=2).value)
+            date_val = parse_date_from_cell(ws.cell(row=r, column=date_col).value)
             if date_val:
                 data_start = r
                 break
-
         if data_start is None:
-            # Try row 4 as fallback
             data_start = 4
 
+        o = data_offset
         for row_idx in range(data_start, ws.max_row + 1):
-            date_str = parse_date_from_cell(ws.cell(row=row_idx, column=2).value)
+            date_str = parse_date_from_cell(ws.cell(row=row_idx, column=date_col).value)
             if not date_str:
                 continue
 
-            # YGN PD (cols 3, 4, 5)
+            # YGN PD
             _add_purchase(result, sector_id, date_str, "YGN", "PD",
-                          ws.cell(row=row_idx, column=3).value,
-                          ws.cell(row=row_idx, column=4).value,
-                          ws.cell(row=row_idx, column=5).value)
-
-            # YGN HSD (cols 6, 7, 8)
+                          ws.cell(row=row_idx, column=3+o).value,
+                          ws.cell(row=row_idx, column=4+o).value,
+                          ws.cell(row=row_idx, column=5+o).value)
+            # YGN HSD
             _add_purchase(result, sector_id, date_str, "YGN", "HSD",
-                          ws.cell(row=row_idx, column=6).value,
-                          ws.cell(row=row_idx, column=7).value,
-                          ws.cell(row=row_idx, column=8).value)
-
-            # MDY PD (cols 9, 10, 11)
+                          ws.cell(row=row_idx, column=6+o).value,
+                          ws.cell(row=row_idx, column=7+o).value,
+                          ws.cell(row=row_idx, column=8+o).value)
+            # MDY PD
             _add_purchase(result, sector_id, date_str, "MDY", "PD",
-                          ws.cell(row=row_idx, column=9).value,
-                          ws.cell(row=row_idx, column=10).value,
-                          ws.cell(row=row_idx, column=11).value)
-
-            # MDY HSD (cols 12, 13, 14)
+                          ws.cell(row=row_idx, column=9+o).value,
+                          ws.cell(row=row_idx, column=10+o).value,
+                          ws.cell(row=row_idx, column=11+o).value)
+            # MDY HSD
             _add_purchase(result, sector_id, date_str, "MDY", "HSD",
-                          ws.cell(row=row_idx, column=12).value,
-                          ws.cell(row=row_idx, column=13).value,
-                          ws.cell(row=row_idx, column=14).value)
+                          ws.cell(row=row_idx, column=12+o).value,
+                          ws.cell(row=row_idx, column=13+o).value,
+                          ws.cell(row=row_idx, column=14+o).value)
 
     wb.close()
     return result

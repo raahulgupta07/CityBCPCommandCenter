@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS sites (
     site_type           TEXT DEFAULT 'Regular',
     cost_center_code    TEXT,
     region              TEXT,
+    business_sector     TEXT,
+    company             TEXT,
     created_at          TEXT DEFAULT (datetime('now')),
     updated_at          TEXT DEFAULT (datetime('now'))
 );
@@ -305,8 +307,6 @@ CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity, is_acknowledg
 CREATE INDEX IF NOT EXISTS idx_daily_summary_date ON daily_site_summary(date);
 CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sales(date);
 CREATE INDEX IF NOT EXISTS idx_daily_sales_site ON daily_sales(sales_site_name, date);
-CREATE INDEX IF NOT EXISTS idx_daily_sales_site_id ON daily_sales(site_id, date);
-CREATE INDEX IF NOT EXISTS idx_hourly_sales_site_id ON hourly_sales(site_id, date);
 CREATE INDEX IF NOT EXISTS idx_hourly_sales_date ON hourly_sales(date);
 CREATE INDEX IF NOT EXISTS idx_hourly_sales_site ON hourly_sales(sales_site_name, date);
 CREATE INDEX IF NOT EXISTS idx_store_master_sector ON store_master(sector_id);
@@ -343,10 +343,16 @@ def init_db():
             ("hourly_sales", "site_id", "TEXT"),
             ("sites", "cost_center_code", "TEXT"),
             ("sites", "region", "TEXT"),
+            ("sites", "business_sector", "TEXT"),
+            ("sites", "company", "TEXT"),
         ]:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
             if col not in cols:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_type}")
+
+        # Create indexes that depend on migrated columns (site_id)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_sales_site_id ON daily_sales(site_id, date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_hourly_sales_site_id ON hourly_sales(site_id, date)")
 
         # Seed diesel expense LY from file if table is empty
         ly_count = conn.execute("SELECT COUNT(*) FROM diesel_expense_ly").fetchone()[0]
@@ -386,15 +392,18 @@ def _seed_diesel_expense_ly(conn):
 
 # ─── CRUD Helpers ────────────────────────────────────────────────────────────
 
-def upsert_site(conn, site_id, site_name, sector_id, site_type="Regular", cost_center_code=None):
+def upsert_site(conn, site_id, site_name, sector_id, site_type="Regular",
+                cost_center_code=None, business_sector=None, company=None):
     conn.execute("""
-        INSERT INTO sites (site_id, site_name, sector_id, site_type, cost_center_code)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO sites (site_id, site_name, sector_id, site_type, cost_center_code, business_sector, company)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(site_id) DO UPDATE SET
             site_name = excluded.site_name,
             cost_center_code = COALESCE(excluded.cost_center_code, sites.cost_center_code),
+            business_sector = COALESCE(excluded.business_sector, sites.business_sector),
+            company = COALESCE(excluded.company, sites.company),
             updated_at = datetime('now')
-    """, (site_id, site_name, sector_id, site_type, cost_center_code))
+    """, (site_id, site_name, sector_id, site_type, cost_center_code, business_sector, company))
 
 def upsert_generator(conn, site_id, model_name, model_name_raw, power_kva,
                       consumption_per_hour, fuel_type=None, supplier=None):
