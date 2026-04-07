@@ -12,6 +12,8 @@
 	onMount(async () => {
 		if (!api.isLoggedIn()) { goto('/login'); return; }
 		try { currentUser = await api.get('/me'); } catch(e) { goto('/login'); return; }
+		// Only super_admin can access settings
+		if (currentUser?.role !== 'super_admin') { goto('/dashboard'); return; }
 		ready = true;
 	});
 </script>

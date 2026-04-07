@@ -7,7 +7,10 @@ Roles:
   admin       — Upload data, run analysis, view all, manage alert recipients
   user        — View dashboards and analysis only (read-only)
 """
-import streamlit as st
+try:
+    import streamlit as st
+except ImportError:
+    st = None  # Running without Streamlit (FastAPI mode)
 import hashlib
 import secrets
 from datetime import datetime, timedelta

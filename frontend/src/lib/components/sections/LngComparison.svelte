@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { groupedBar } from '$lib/charts';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	let { dateFrom = '', dateTo = '' }: { dateFrom?: string; dateTo?: string } = $props();
 
@@ -31,6 +32,8 @@
 	const keys = ['avg_gen_hr', 'avg_fuel', 'efficiency', 'avg_buffer', 'avg_cost', 'avg_blackout'];
 </script>
 
+<AiInsightPanel type="kpi" data={{ tab: 'lng_comparison', summary: 'Regular diesel generators vs LNG generators — efficiency, cost, and buffer comparison' }} title="AI INSIGHT — REGULAR vs LNG" />
+
 {#if loading}
 	<p class="text-sm" style="color: #65655e; py-4 text-center">Loading...</p>
 {:else if data.length >= 2}
@@ -53,3 +56,27 @@
 {:else}
 	<p class="text-sm" style="color: #65655e; py-4 text-center">Need both Regular and LNG site types for comparison.</p>
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead><tr style="background: #ebe8dd;">
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+			</tr></thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #383832;">REGULAR vs LNG</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">comparison by site_type (Regular/LNG)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">sites.site_type</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">AVG FUEL/SITE</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(fuel) &divide; COUNT(sites) per type</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ff9d00;">AVG GEN HR/SITE</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(gen_hr) &divide; COUNT(sites) per type</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #007518;">AVG BUFFER</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">tank &divide; fuel per type</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #65655e;">EFFICIENCY</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">fuel &divide; gen_hr per type</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+			</tbody>
+		</table>
+	</div>
+</div>

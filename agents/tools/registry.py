@@ -5,7 +5,13 @@ Uses TOON format for tool results (40% fewer tokens than JSON for tabular data).
 import json
 import functools
 import pandas as pd
-from toon_format import encode as toon_encode
+try:
+    from toon_format import encode as toon_encode
+except ImportError:
+    def toon_encode(data):
+        """Fallback: use JSON when toon_format not installed."""
+        import json
+        return json.dumps(data, default=str)
 
 _TOOL_SCHEMAS = []
 _TOOL_FUNCTIONS = {}

@@ -50,12 +50,15 @@ def last_sync(user: dict = Depends(require_admin)):
             if not ts:
                 # Fallback: check upload_history
                 ft_variants = {
-                    "combo_sales": "('daily_sales','hourly_sales','combo_sales','sales','sales_reference','hourly_reference')",
-                    "diesel_expense_ly": "('diesel_expense_ly','diesel_expense')",
+                    "combo_sales": ['daily_sales','hourly_sales','combo_sales','sales','sales_reference','hourly_reference'],
+                    "diesel_expense_ly": ['diesel_expense_ly','diesel_expense'],
                 }
                 if key in ft_variants:
+                    variants_list = ft_variants[key]
+                    placeholders = ",".join(["?"] * len(variants_list))
                     hist = conn.execute(
-                        f"SELECT uploaded_at FROM upload_history WHERE file_type IN {ft_variants[key]} ORDER BY uploaded_at DESC LIMIT 1"
+                        f"SELECT uploaded_at FROM upload_history WHERE file_type IN ({placeholders}) ORDER BY uploaded_at DESC LIMIT 1",
+                        variants_list
                     ).fetchone()
                 else:
                     hist = conn.execute(
@@ -84,8 +87,14 @@ def upload_history(user: dict = Depends(require_admin)):
             FROM upload_history ORDER BY uploaded_at DESC
         """, conn)
         totals = {}
+        # Hardcoded whitelist — safe to interpolate into SQL
+        ALLOWED_TABLES = {"sites", "generators", "daily_operations", "daily_site_summary",
+                          "fuel_purchases", "daily_sales", "hourly_sales", "store_master",
+                          "alerts", "upload_history", "sectors", "users", "sessions",
+                          "diesel_expense_ly", "site_sales_map", "generator_name_map"}
         for t in ["sites", "generators", "daily_operations", "fuel_purchases",
                    "daily_sales", "hourly_sales", "store_master", "diesel_expense_ly"]:
+            assert t in ALLOWED_TABLES, f"Invalid table: {t}"
             try:
                 totals[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             except Exception:
@@ -199,10 +208,12 @@ def raw_data(
 @router.get("/upload/validation")
 def data_validation(user: dict = Depends(get_current_user)):
     """Compare DB totals against Excel source file totals for all uploaded blackout files."""
-    import glob, os
+    import os
     from parsers.blackout_parser import parse_blackout_file
     from parsers.base_parser import parse_date_from_cell, clean_numeric
     import openpyxl
+
+    DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "db"))
 
     sectors = []
 
@@ -250,13 +261,14 @@ def data_validation(user: dict = Depends(get_current_user)):
             if last_upload:
                 # Search for file in common locations
                 fname = last_upload[0]
+                data_parent = os.path.abspath(os.path.join(DATA_DIR, ".."))
                 search_paths = [
-                    f"/Users/rahulgupta/Desktop/CityAI-Final-Project/CityBCPAgent/Data2/{fname}",
-                    f"/Users/rahulgupta/Desktop/CityAI-Final-Project/CityBCPAgent/Data/{fname}",
+                    os.path.join(data_parent, "Data2", fname),
+                    os.path.join(data_parent, "Data", fname),
                 ]
                 # Also search by pattern
-                for pattern_dir in ["/Users/rahulgupta/Desktop/CityAI-Final-Project/CityBCPAgent/Data2",
-                                     "/Users/rahulgupta/Desktop/CityAI-Final-Project/CityBCPAgent/Data"]:
+                for pattern_dir in [os.path.join(data_parent, "Data2"),
+                                     os.path.join(data_parent, "Data")]:
                     if os.path.isdir(pattern_dir):
                         for f in os.listdir(pattern_dir):
                             if sector_id.lower() in f.lower() and "blackout" in f.lower() and f.endswith(".xlsx"):
@@ -388,14 +400,13 @@ def data_validation(user: dict = Depends(get_current_user)):
 
 @router.post("/upload/clear/{target}")
 def clear_data(target: str, user: dict = Depends(require_admin)):
-    def _sector_clear(sec):
+    def _sector_clear(conn, sec):
         """Full cleanup for a sector: operations → summary → generators → sites."""
-        return [
-            f"DELETE FROM daily_operations WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='{sec}')",
-            f"DELETE FROM daily_site_summary WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='{sec}')",
-            f"DELETE FROM generators WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id='{sec}')",
-            f"DELETE FROM sites WHERE sector_id='{sec}'",
-        ]
+        conn.execute("DELETE FROM daily_operations WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id=?)", (sec,))
+        conn.execute("DELETE FROM daily_site_summary WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id=?)", (sec,))
+        conn.execute("DELETE FROM generators WHERE site_id IN (SELECT site_id FROM sites WHERE sector_id=?)", (sec,))
+        conn.execute("DELETE FROM sites WHERE sector_id=?", (sec,))
+
     CLEAR_MAP = {
         "all": [
             "DELETE FROM daily_operations", "DELETE FROM daily_site_summary",
@@ -403,19 +414,25 @@ def clear_data(target: str, user: dict = Depends(require_admin)):
             "DELETE FROM fuel_purchases", "DELETE FROM daily_sales",
             "DELETE FROM hourly_sales", "DELETE FROM alerts", "DELETE FROM ai_insights_cache",
         ],
-        "cmhl": _sector_clear("CMHL"),
-        "cp": _sector_clear("CP"),
-        "cfc": _sector_clear("CFC"),
-        "pg": _sector_clear("PG"),
         "fuel": ["DELETE FROM fuel_purchases"],
         "sales": ["DELETE FROM daily_sales", "DELETE FROM hourly_sales"],
     }
-    if target not in CLEAR_MAP:
-        raise HTTPException(400, f"Target must be one of: {', '.join(CLEAR_MAP.keys())}")
+    SECTOR_CLEAR_MAP = {
+        "cmhl": "CMHL",
+        "cp": "CP",
+        "cfc": "CFC",
+        "pg": "PG",
+    }
+    valid_targets = list(CLEAR_MAP.keys()) + list(SECTOR_CLEAR_MAP.keys())
+    if target not in valid_targets:
+        raise HTTPException(400, f"Target must be one of: {', '.join(valid_targets)}")
 
     with get_db() as conn:
-        for sql in CLEAR_MAP[target]:
-            conn.execute(sql)
+        if target in SECTOR_CLEAR_MAP:
+            _sector_clear(conn, SECTOR_CLEAR_MAP[target])
+        else:
+            for sql in CLEAR_MAP[target]:
+                conn.execute(sql)
         conn.execute("DELETE FROM alerts")
         conn.execute("DELETE FROM ai_insights_cache")
 

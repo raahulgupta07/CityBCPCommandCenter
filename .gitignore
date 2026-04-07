@@ -13,6 +13,7 @@ build/
 .env.production
 
 # Database (starts empty, user uploads data)
+backend/bcp.db
 db/bcp.db
 db/bcp.db-wal
 db/bcp.db-shm
@@ -37,6 +38,5 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
-backend/bcp.db
 Data2/
 *.xlsx

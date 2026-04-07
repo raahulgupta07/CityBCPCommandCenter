@@ -6,18 +6,19 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl nodejs npm && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt python-dotenv requests
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
 # Create DB directory (empty — user uploads all data via UI)
 RUN mkdir -p db
 
-RUN chmod +x entrypoint.sh
+# Build frontend
+RUN cd frontend && npm install && npm run build
 
-EXPOSE 8501
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
-ENTRYPOINT ["./entrypoint.sh"]
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl --fail http://localhost:8000/api/health || exit 1
+CMD ["python3", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

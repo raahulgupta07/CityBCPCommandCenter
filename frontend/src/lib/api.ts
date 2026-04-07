@@ -1,4 +1,6 @@
-const BASE = 'http://localhost:8000/api';
+const BASE = import.meta.env.VITE_API_BASE || '/api';
+
+export { BASE as API_BASE };
 
 function getToken(): string | null {
 	if (typeof window === 'undefined') return null;
@@ -39,6 +41,7 @@ export const api = {
 	async login(username: string, password: string) {
 		const data = await request('POST', '/login', { username, password });
 		localStorage.setItem('token', data.access_token);
+		sessionStorage.removeItem('bcp_booted'); // Reset boot animation for fresh login
 		return data.user;
 	},
 
@@ -55,7 +58,7 @@ export const api = {
 export async function downloadExcel(
 	data: any[],
 	tableName: string,
-	opts: { columns?: string[]; filters?: string; statusColumns?: string[] } = {}
+	opts: { columns?: string[]; filters?: string; statusColumns?: string[]; columnGroups?: { group: string; color?: string; cols: string[] }[] } = {}
 ) {
 	if (!data.length) return;
 	const token = getToken();
@@ -71,6 +74,7 @@ export async function downloadExcel(
 			columns: opts.columns || null,
 			filters: opts.filters || null,
 			status_columns: opts.statusColumns || null,
+			column_groups: opts.columnGroups || null,
 		}),
 	});
 

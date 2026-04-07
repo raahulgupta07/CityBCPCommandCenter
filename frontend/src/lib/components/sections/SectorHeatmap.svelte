@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 
 	let { dateFrom = '', dateTo = '' }: { dateFrom?: string; dateTo?: string } = $props();
@@ -51,7 +52,7 @@
 				</thead>
 				<tbody>
 					{#each rows as r, i}
-						<tr onclick={() => window.location.href = '/dashboard?sector=' + r.sector_id}
+						<tr onclick={() => goto('/dashboard?sector=' + r.sector_id)}
 							class="cursor-pointer hover:bg-[#ebe8dd] transition-colors"
 							style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'}; border-bottom: 1px solid #ebe8dd;">
 							<td class="py-2.5 px-4 font-bold" style="color: #383832;">{r.sector_id}</td>

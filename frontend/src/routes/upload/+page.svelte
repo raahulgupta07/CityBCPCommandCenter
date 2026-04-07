@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api';
+	import { api, API_BASE } from '$lib/api';
 
 	let activeTab = $state('daily');
 	let loading = $state(true);
@@ -16,6 +16,8 @@
 	let uploadProgress = $state({ current: 0, total: 0, filename: '', startTime: 0 });
 	let elapsed = $state(0);
 	let elapsedTimer: any = null;
+	let validateProgress: Record<number, number> = $state({}); // idx -> 0-100 percent
+	let uploadFileProgress = $state(0); // 0-100 for current uploading file
 
 	// Other tabs
 	let summaryData: any = $state(null);
@@ -178,11 +180,33 @@
 			const formData = new FormData();
 			formData.append('file', file);
 			const token = localStorage.getItem('token');
-			const res = await fetch('http://localhost:8000/api/upload/validate', {
-				method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData
+
+			const result = await new Promise<any>((resolve, reject) => {
+				const xhr = new XMLHttpRequest();
+				xhr.open('POST', `${API_BASE}/upload/validate`);
+				xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+				xhr.upload.onprogress = (e) => {
+					if (e.lengthComputable) {
+						validateProgress = { ...validateProgress, [idx]: Math.round((e.loaded / e.total) * 100) };
+					}
+				};
+
+				xhr.onload = () => {
+					if (xhr.status >= 200 && xhr.status < 300) {
+						resolve(JSON.parse(xhr.responseText));
+					} else {
+						try { reject(new Error(JSON.parse(xhr.responseText).detail)); }
+						catch { reject(new Error(`HTTP ${xhr.status}`)); }
+					}
+				};
+				xhr.onerror = () => reject(new Error('Network error'));
+				xhr.send(formData);
 			});
-			if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
-			const result = await res.json();
+
+			delete validateProgress[idx];
+			validateProgress = { ...validateProgress };
+
 			const dt = result.type || '';
 			const currentTab = uploadSection;
 
@@ -222,15 +246,32 @@
 				const formData = new FormData();
 				formData.append('file', queue[i].file);
 				const token = localStorage.getItem('token');
-				const controller = new AbortController();
-				const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 min timeout
-				const res = await fetch('http://localhost:8000/api/upload', {
-					method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData,
-					signal: controller.signal
+				uploadFileProgress = 0;
+
+				const result = await new Promise<any>((resolve, reject) => {
+					const xhr = new XMLHttpRequest();
+					xhr.open('POST', `${API_BASE}/upload`);
+					xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+					xhr.timeout = 600000; // 10 min timeout
+
+					xhr.upload.onprogress = (e) => {
+						if (e.lengthComputable) {
+							uploadFileProgress = Math.round((e.loaded / e.total) * 100);
+						}
+					};
+
+					xhr.onload = () => {
+						if (xhr.status >= 200 && xhr.status < 300) {
+							resolve(JSON.parse(xhr.responseText));
+						} else {
+							try { reject(new Error(JSON.parse(xhr.responseText).detail)); }
+							catch { reject(new Error(`HTTP ${xhr.status}`)); }
+						}
+					};
+					xhr.onerror = () => reject(new Error('Network error'));
+					xhr.ontimeout = () => reject(new Error('Upload timed out'));
+					xhr.send(formData);
 				});
-				clearTimeout(timeoutId);
-				if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
-				const result = await res.json();
 				queue = queue.map((q, j) => j === i ? { ...q, status: 'IMPORTED' as const, type: result.type, rows: result.records, validation: result.validation || [] } : q);
 			} catch (e: any) {
 				queue = queue.map((q, j) => j === i ? { ...q, status: 'REJECTED' as const, error: e.message } : q);
@@ -451,7 +492,22 @@
 											{statusIcon[item.status]} {item.status}
 										</span>
 										{#if item.error}<span class="text-[9px] ml-2" style="color: {item.status === 'WRONG_TAB' ? '#ff9d00' : '#be2d06'};">{item.error}</span>{/if}
-										{#if item.status === 'VALIDATING' || item.status === 'UPLOADING'}<span class="animate-pulse ml-1">...</span>{/if}
+										{#if item.status === 'VALIDATING'}
+										{@const pct = validateProgress[queue.indexOf(item)] ?? 0}
+										<div class="inline-flex items-center gap-2 ml-2">
+											<div class="w-20 h-1.5" style="background: #ebe8dd; border: 1px solid #383832;">
+												<div class="h-full transition-all" style="background: #00fc40; width: {pct}%;"></div>
+											</div>
+											<span class="text-[9px] font-mono" style="color: #65655e;">{pct}%</span>
+										</div>
+									{:else if item.status === 'UPLOADING'}
+										<div class="inline-flex items-center gap-2 ml-2">
+											<div class="w-20 h-1.5" style="background: #ebe8dd; border: 1px solid #383832;">
+												<div class="h-full transition-all" style="background: #ff9d00; width: {uploadFileProgress}%;"></div>
+											</div>
+											<span class="text-[9px] font-mono" style="color: #65655e;">{uploadFileProgress}%</span>
+										</div>
+									{/if}
 									</td>
 									<td class="px-4 py-3">
 										{#if item.status === 'VALIDATED' || item.status === 'INVALID' || item.status === 'WRONG_TAB'}
@@ -535,7 +591,6 @@
 						</button>
 					{:else if submitting}
 						<div class="flex-1 mr-4">
-							<!-- Progress bar -->
 							<div class="flex items-center gap-3 mb-1">
 								<div class="text-[10px] font-black uppercase" style="color: #383832;">
 									PROCESSING {uploadProgress.current}/{uploadProgress.total}
@@ -544,11 +599,17 @@
 									{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')} elapsed
 								</div>
 							</div>
-							<div class="w-full h-3 overflow-hidden" style="background: #ebe8dd; border: 1px solid #383832;">
-								<div class="h-full transition-all" style="background: #00fc40; width: {uploadProgress.total > 0 ? (uploadProgress.current / uploadProgress.total * 100) : 0}%;"></div>
+							<!-- Overall file progress -->
+							<div class="w-full h-2 overflow-hidden mb-1" style="background: #ebe8dd; border: 1px solid #383832;">
+								<div class="h-full transition-all" style="background: #007518; width: {uploadProgress.total > 0 ? ((uploadProgress.current - 1 + uploadFileProgress / 100) / uploadProgress.total * 100) : 0}%;"></div>
 							</div>
-							<div class="text-[9px] font-mono mt-1 truncate" style="color: #ff9d00;">
-								{uploadProgress.filename} — please wait, large files may take several minutes...
+							<!-- Current file byte progress -->
+							<div class="flex items-center gap-2">
+								<span class="text-[9px] font-mono truncate" style="color: #ff9d00;">{uploadProgress.filename}</span>
+								<div class="w-24 h-1.5 shrink-0" style="background: #ebe8dd; border: 1px solid #383832;">
+									<div class="h-full transition-all" style="background: #00fc40; width: {uploadFileProgress}%;"></div>
+								</div>
+								<span class="text-[9px] font-mono shrink-0" style="color: #65655e;">{uploadFileProgress}%</span>
 							</div>
 						</div>
 						<div class="px-6 py-3 font-black uppercase text-sm animate-pulse shrink-0" style="background: #ff9d00; color: #383832; border: 2px solid #383832;">

@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { lineChart, dualAxisChart } from '$lib/charts';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	// Sector rolling chart guides
 	const sectorGuides = {
@@ -67,6 +68,8 @@
 
 	const wl = `${window}-Day Avg`;
 </script>
+
+<AiInsightPanel type="kpi" data={{ tab: 'rolling', summary: '3-day rolling averages for fuel, buffer, efficiency, blackout across sectors' }} title="AI INSIGHT — ROLLING AVERAGES" />
 
 {#if loading}
 	<div class="space-y-4 py-4">
@@ -212,3 +215,35 @@
 		</div>
 	{/if}
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead><tr style="background: #ebe8dd;">
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+			</tr></thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ef4444;">FUEL BURN (3D AVG)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) over 3 days &divide; 3</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #3b82f6;">BUFFER DAYS (3D AVG)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">spare_tank &divide; daily_used, 3-day rolling window</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #3b82f6;">GEN HOURS (3D AVG)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(gen_run_hr) over 3 days &divide; 3</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #8b5cf6;">EFFICIENCY (3D AVG)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(fuel) &divide; SUM(gen_hr) per date, 3-day rolling</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">GEN HR vs FUEL</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">3D rolling avg: gen_hr (bars) vs fuel (line)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #007518;">BUFFER DAYS RISK</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">tank &divide; 3D_avg_fuel, rolling window</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #dc2626;">CRITICAL SITES</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">COUNT(sites WHERE buffer &lt; 3 days), 3D rolling</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ff9d00;">FUEL BY SECTOR (3D)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) per sector, 3-day rolling avg</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #65655e;">EFFICIENCY / SECTOR (3D)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(fuel) &divide; SUM(gen_hr) per sector, 3-day rolling</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #9d4867;">DIESEL COST / SECTOR (3D)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(fuel) &times; sector_price, 3-day rolling avg</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">BLACKOUT HR (3D)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">AVG(blackout_hr) per sector, 3-day rolling</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ef4444;">DIESEL % SALES (3D)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">(diesel_cost &divide; sales) &times; 100, 3-day rolling avg</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #006f7c;">SALES / SECTOR (3D)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(sales_amt) &divide; 1M per sector, 3-day rolling</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_sales</code></td></tr>
+			</tbody>
+		</table>
+	</div>
+</div>

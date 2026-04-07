@@ -145,6 +145,77 @@ DATA:
     return result
 
 
+def executive_briefing(data: dict, force_refresh: bool = False) -> str:
+    """Generate McKinsey-style executive briefing for C-suite.
+
+    data = full overview KPI data including sector_snapshot, changes, etc.
+    """
+    context = json.dumps(data, default=str)
+    cache_key = _get_cache_key(context, "executive_briefing")
+
+    if not force_refresh:
+        cached = _get_cached(cache_key)
+        if cached:
+            return cached
+
+    prompt = f"""You are a SENIOR PARTNER at McKinsey & Company advising the CEO of City Holdings Myanmar on their Business Continuity Planning (BCP) operations. The company operates 60+ retail, F&B, and property sites that rely on diesel generators during Myanmar's frequent power blackouts.
+
+Write an EXECUTIVE BRIEFING based on the data below. Be direct, quantitative, and action-oriented. Every statement must be backed by a specific number.
+
+FORMAT (use EXACTLY this structure with these headers):
+
+■ EXECUTIVE SUMMARY
+[2-3 sentences. Start with the verdict: CRITICAL/WARNING/STABLE/IMPROVING. Include the single most important number.]
+
+■ TOP 3 RISKS (ranked by severity × business impact)
+🔴 1. [RISK TITLE IN CAPS]
+   Finding: [what happened, with specific numbers]
+   Impact: [business consequence if not addressed]
+   Action: [specific WHO does WHAT by WHEN]
+
+🟠 2. [RISK TITLE]
+   Finding: [data point]
+   Impact: [consequence]
+   Action: [specific action]
+
+🟡 3. [RISK TITLE]
+   Finding: [data point]
+   Impact: [consequence]
+   Action: [specific action]
+
+■ PRIORITY ACTIONS
+1. [🔴 IMMEDIATE] [action] — [expected outcome]
+2. [🟠 48 HOURS] [action] — [expected outcome]
+3. [🟡 THIS WEEK] [action] — [expected outcome]
+4. [⚪ MONITOR] [what to watch] — [trigger for escalation]
+
+■ SECTOR SCORECARD
+[One line per sector: SECTOR — STATUS EMOJI — key metric — one-line assessment]
+
+■ WEEK AHEAD OUTLOOK
+[3 bullet predictions: buffer trend, cost trend, risk trend. Be specific with projected numbers.]
+
+■ KPI WATCH
+[List 4-5 KPIs that changed significantly. Format: ARROW PERCENT METRIC — VALUE — ASSESSMENT]
+
+Rules:
+- Use actual site names, sector names, and numbers from the data
+- Every finding must have a specific number
+- Actions must specify WHO (operations team, procurement, management) and WHEN (now, 48hr, this week)
+- Include MMK costs where relevant
+- Compare 1D vs 3D to identify trends
+- Flag any data quality issues (missing sites, incomplete data)
+- Be brutally honest about risks — don't sugarcoat
+- Maximum 500 words total
+
+DATA:
+{context}"""
+
+    result = _call_llm(prompt, max_tokens=1500)
+    _set_cache(cache_key, result, "executive_briefing")
+    return result
+
+
 def kpi_insight(data: dict, force_refresh: bool = False) -> str:
     """Generate insight for KPI cards.
 
@@ -221,14 +292,3 @@ Be specific. Use numbers. 4 lines only."""
     result = _call_llm(prompt, max_tokens=400)
     _set_cache(cache_key, result, "site_insight")
     return result
-
-
-def render_insight_box(content: str, title: str = "🧠 AI Insight"):
-    """Render an insight box in Streamlit."""
-    import streamlit as st
-    st.markdown(f"""
-    <div style="background:#0f172a;border-left:4px solid #00ff41;border-radius:0 10px 10px 0;
-                padding:14px 18px;margin:12px 0;color:#e0e0e0;font-size:13px;line-height:1.7">
-        <div style="font-weight:700;color:#00ff41;margin-bottom:6px;font-size:14px">{title}</div>
-        <div style="white-space:pre-line">{content}</div>
-    </div>""", unsafe_allow_html=True)

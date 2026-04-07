@@ -98,12 +98,12 @@
 		<!-- Right side decoration -->
 		<div class="hidden lg:flex flex-1 justify-end items-center pt-20">
 			<div class="text-right space-y-4">
-				<h2 class="text-8xl font-black uppercase tracking-tighter leading-none select-none opacity-5" style="color: #383832;">
+				<h2 class="text-8xl font-black uppercase tracking-tighter leading-none select-none" style="color: #383832;">
 					CITY<br/>HOLDINGS<br/>MYANMAR
 				</h2>
-				<div class="flex justify-end gap-8 text-2xl font-black tracking-widest uppercase opacity-5" style="color: #383832;">
-					<span>60+ SITES</span>
-					<span>REAL-TIME</span>
+				<div class="flex justify-end gap-8 text-2xl font-black tracking-widest uppercase mt-2" style="color: #383832;">
+					<span>BCP AGENT</span>
+					<span style="color: #007518;">v2.0</span>
 				</div>
 			</div>
 		</div>

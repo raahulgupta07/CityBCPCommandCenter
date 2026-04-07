@@ -315,6 +315,12 @@ def get_data_quality(user: dict = Depends(require_admin)):
 @router.get("/system/stats")
 def get_system_stats(user: dict = Depends(require_super_admin)):
     tables = {}
+    # Hardcoded whitelist — safe to interpolate into SQL
+    ALLOWED_TABLES = {"sites", "generators", "daily_operations", "daily_site_summary",
+                      "fuel_purchases", "daily_sales", "hourly_sales", "store_master",
+                      "alerts", "upload_history", "sectors", "users", "sessions",
+                      "diesel_expense_ly", "site_sales_map", "generator_name_map",
+                      "alert_recipients", "email_log", "ai_insights_cache", "app_settings"}
     table_names = [
         "users", "sectors", "sites", "generators", "daily_operations",
         "fuel_purchases", "daily_site_summary", "alerts",
@@ -322,6 +328,7 @@ def get_system_stats(user: dict = Depends(require_super_admin)):
     ]
     with get_db() as conn:
         for t in table_names:
+            assert t in ALLOWED_TABLES, f"Invalid table: {t}"
             try:
                 tables[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             except Exception:

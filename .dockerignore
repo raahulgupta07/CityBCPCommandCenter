@@ -7,3 +7,11 @@ db/bcp.db-wal
 db/bcp.db-shm
 Data/
 uploads/
+frontend/node_modules
+frontend/.svelte-kit
+frontend/build
+frontend/.env
+*.log
+backend/bcp.db
+refresh_data.py
+seed_database.py

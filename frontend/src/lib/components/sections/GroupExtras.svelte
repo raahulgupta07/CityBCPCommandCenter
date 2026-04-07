@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { barChart, hbarChart, groupedBar } from '$lib/charts';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	let { dateFrom = '', dateTo = '', sector = '' }: { dateFrom?: string; dateTo?: string; sector?: string } = $props();
 
@@ -126,25 +127,13 @@
 	}
 </script>
 
-{#if loading}
-	<div class="space-y-4 py-4">
-		<div class="skeleton h-5 w-48"></div>
-		<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-			<div class="skeleton h-[280px]"></div>
-			<div class="skeleton h-[280px]"></div>
-			<div class="skeleton h-[280px]"></div>
-		</div>
-		<div class="skeleton h-5 w-36 mt-4"></div>
-		<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-			<div class="skeleton h-[260px]"></div>
-			<div class="skeleton h-[260px]"></div>
-		</div>
-	</div>
-{:else if daily.length > 0}
+<AiInsightPanel type="kpi" data={{ tab: 'operations_extras', summary: 'Day-of-week patterns, week-over-week changes, waste/theft detection' }} title="AI INSIGHT — PATTERNS & WASTE" />
+
+{#if daily.length > 0 || !loading}
 	<!-- Last Day Breakdown -->
 	{@const ld = lastDayData()}
 	{#if ld}
-		<details class="mb-6">
+		<details class="mb-6" open>
 			<summary class="cursor-pointer text-sm font-black uppercase px-4 py-2.5" style="background: #383832; color: #feffd6;">LAST DAY BREAKDOWN — {ld.maxDate}</summary>
 			<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
 				<!-- #33 Top Sites by Fuel Used -->
@@ -177,7 +166,7 @@
 
 	<!-- Day of Week -->
 	{@const dow = dowData()}
-	<details class="mb-6">
+	<details class="mb-6" open>
 		<summary class="cursor-pointer text-sm font-black uppercase px-4 py-2.5" style="background: #383832; color: #feffd6;">📅 Day-of-Week Patterns</summary>
 		<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
 			<Chart option={barChart(dow.order, dow.avgFuel, { title: 'Avg Fuel Used (L) by Day', color: '#be2d06' })} height="280px" guide={{ formula: 'Average daily fuel (liters) grouped by day of week.', sources: [{ data: 'Fuel Used', file: 'Blackout Hr Excel', col: 'Daily Used', method: 'AVG per DOW' }], reading: [{ color: 'green', text: '✅ Even bars = Consistent fuel use' }, { color: 'red', text: '🔴 Spike on a day = Pattern worth investigating' }], explain: 'Like checking which day you <b>spend the most on gas</b>. Spikes reveal weekly patterns.' }} />
@@ -199,7 +188,7 @@
 	<!-- Fleet Stats -->
 	{#if fleet.dow_patterns.length > 0}
 		{@const dowDays = fleet.dow_patterns.map((d: any) => d.dow)}
-		<details class="mb-6">
+		<details class="mb-6" open>
 			<summary class="cursor-pointer text-sm font-black uppercase px-4 py-2.5" style="background: #383832; color: #feffd6;">⚙️ Operations & Fleet</summary>
 			<div class="mt-3 space-y-4">
 				<!-- DOW patterns: Gen Hours + Blackout -->
@@ -263,4 +252,104 @@
 			{ title: 'Sector Scores (0-100, higher = better)' }
 		)} guide={{ formula: 'Each metric normalized 0-100. Buffer: higher = more fuel. Others: lower raw value = higher score (inverted).', sources: [{ data: 'All Metrics', file: 'All Sources', col: 'Buffer/Efficiency/Fuel/Blackout/Diesel%', method: 'Normalized 0-100' }], reading: [{ color: 'green', text: '✅ Tall bars = Good performance in that metric' }, { color: 'red', text: '🔴 Short bars = Weak area to improve' }], explain: 'Like a <b>school report card</b> for each sector. Higher bar = better grade. Find which sectors need help in which areas.' }} />
 	{/if}
+
+	<!-- CHAPTER 8: DAY OF WEEK PATTERNS -->
+	<div id="ops-patterns" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+		<div class="flex items-center gap-3">
+			<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">date_range</span>
+			<div>
+				<div class="font-black uppercase text-sm">CHAPTER 8: WEEKLY PATTERNS</div>
+				<div class="text-[10px] opacity-75">Day-of-week fuel and blackout patterns — which days burn the most?</div>
+			</div>
+		</div>
+		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Is Tuesday worse than Monday? Which day has lowest consumption?</div>
+	</div>
+	{#if fleet.dow_patterns.length > 0}
+		{@const dowCats = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']}
+		{@const dowSorted = dowCats.map(d => fleet.dow_patterns.find((p: any) => p.dow === d) || { avg_fuel: 0, avg_blackout: 0 })}
+		{@const dowFuelVals = dowSorted.map((p: any) => Math.round((p.avg_fuel || 0) * 10) / 10)}
+		{@const dowBlackoutVals = dowSorted.map((p: any) => Math.round((p.avg_blackout || 0) * 10) / 10)}
+		<div class="mb-6">
+			<div class="px-4 py-2.5 font-black text-sm uppercase" style="background: #383832; color: #feffd6;">DAY OF WEEK PATTERNS</div>
+			<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
+				<div class="h-[300px]">
+					<Chart option={barChart(dowCats, dowFuelVals, { title: 'Avg Fuel Used by Day', color: '#383832' })} height="300px" />
+				</div>
+				<div class="h-[300px]">
+					<Chart option={barChart(dowCats, dowBlackoutVals, { title: 'Avg Blackout Hr by Day', color: '#be2d06' })} height="300px" />
+				</div>
+			</div>
+		</div>
+	{/if}
+
+	<!-- CHAPTER 9: WASTE / THEFT DETECTION -->
+	<div id="ops-waste" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+		<div class="flex items-center gap-3">
+			<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">warning</span>
+			<div>
+				<div class="font-black uppercase text-sm">CHAPTER 9: WASTE & THEFT DETECTION</div>
+				<div class="text-[10px] opacity-75">Sites burning more fuel than generator rating — possible waste or theft.</div>
+			</div>
+		</div>
+		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites have suspiciously high fuel consumption vs rated capacity?</div>
+	</div>
+	{#if fleet.waste_scores.length > 0}
+		{@const wasteRows = [...fleet.waste_scores].sort((a: any, b: any) => (b.waste_score || 0) - (a.waste_score || 0))}
+		<div class="mb-6">
+			<div class="px-4 py-2.5 font-black text-sm uppercase" style="background: #383832; color: #feffd6;">WASTE / THEFT DETECTION</div>
+			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; overflow-x: auto; overflow-y: auto; max-height: 500px;" class="mt-3">
+				<table class="w-full text-xs">
+					<thead>
+						<tr style="background: #ebe8dd;">
+							<th class="px-3 py-2 text-left font-black uppercase">SITE</th>
+							<th class="px-3 py-2 text-left font-black uppercase">SECTOR</th>
+							<th class="px-3 py-2 text-right font-black uppercase font-mono">ACTUAL L/HR</th>
+							<th class="px-3 py-2 text-right font-black uppercase font-mono">RATED L/HR</th>
+							<th class="px-3 py-2 text-right font-black uppercase font-mono">WASTE RATIO</th>
+							<th class="px-3 py-2 text-right font-black uppercase font-mono">WASTE SCORE</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each wasteRows as row, i}
+							{@const wr = row.waste_ratio || 0}
+							{@const wrColor = wr > 2 ? '#be2d06' : wr > 1.5 ? '#ff9d00' : '#007518'}
+							<tr style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'};">
+								<td class="px-3 py-2 text-left">{row.site_id}</td>
+								<td class="px-3 py-2 text-left">{row.sector_id}</td>
+								<td class="px-3 py-2 text-right font-mono">{(row.actual_lph || 0).toFixed(1)}</td>
+								<td class="px-3 py-2 text-right font-mono">{(row.rated_lph || 0).toFixed(1)}</td>
+								<td class="px-3 py-2 text-right font-mono font-bold" style="color: {wrColor};">{wr.toFixed(2)}</td>
+								<td class="px-3 py-2 text-right font-mono font-bold">{(row.waste_score || 0).toFixed(1)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</div>
+	{/if}
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead><tr style="background: #ebe8dd;">
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+			</tr></thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #383832;">WEEK OVER WEEK</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">this_week_total &divide; last_week_total &times; 100 &minus; 100</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">LAST DAY BREAKDOWN</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">per-sector SUM on latest date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #383832;">AVG FUEL BY DOW</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">AVG(daily_used) grouped by day_of_week</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fleet-stats</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">AVG BLACKOUT BY DOW</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">AVG(blackout_hr) grouped by day_of_week</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fleet-stats</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">WASTE RATIO</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">actual_L/hr &divide; rated_L/hr (&gt;2 = suspicious)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fleet-stats</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ff9d00;">WASTE SCORE</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">(waste_ratio &minus; 1) &times; 100 (higher = worse)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fleet-stats</code></td></tr>
+			</tbody>
+		</table>
+	</div>
+</div>

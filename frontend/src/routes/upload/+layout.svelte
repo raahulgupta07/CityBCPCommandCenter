@@ -12,6 +12,8 @@
 	onMount(async () => {
 		if (!api.isLoggedIn()) { goto('/login'); return; }
 		try { currentUser = await api.get('/me'); } catch(e) { goto('/login'); return; }
+		// Viewer cannot access data entry
+		if (currentUser?.role === 'user') { goto('/dashboard'); return; }
 		ready = true;
 	});
 </script>

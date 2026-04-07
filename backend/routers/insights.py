@@ -105,7 +105,7 @@ def recommendations(user: dict = Depends(get_current_user)):
             # Critical sites — buffer < 3 days
             crit = pd.read_sql_query(
                 """SELECT site_id, buffer_days
-                   FROM site_summary
+                   FROM daily_site_summary
                    WHERE buffer_days IS NOT NULL AND buffer_days < 3
                    ORDER BY buffer_days""",
                 conn,
@@ -143,7 +143,7 @@ def recommendations(user: dict = Depends(get_current_user)):
             diesel_pct = pd.read_sql_query(
                 """SELECT s.site_id,
                           s.diesel_cost, s.total_sales
-                   FROM site_summary s
+                   FROM daily_site_summary s
                    WHERE s.total_sales > 0
                      AND (s.diesel_cost / s.total_sales) > 0.10
                    ORDER BY (s.diesel_cost / s.total_sales) DESC""",
@@ -262,40 +262,74 @@ def yesterday_comparison(user: dict = Depends(get_current_user)):
     try:
         metrics = []
         with get_db() as conn:
+            # Use daily_site_summary for consistency with all other endpoints
             yesterday = pd.read_sql_query(
                 """SELECT
-                       SUM(total_daily_used) AS burn,
-                       AVG(buffer_days) AS buffer,
-                       SUM(total_daily_used * COALESCE(
-                           (SELECT fp.price_per_liter
-                            FROM fuel_purchases fp
-                            WHERE fp.sector_id = d.sector_id
-                              AND fp.date <= d.date
-                            ORDER BY fp.date DESC LIMIT 1), 0)) AS cost,
-                       SUM(blackout_hr) AS blackout_hr
-                   FROM daily_operations d
-                   WHERE d.date = (SELECT MAX(date) FROM daily_operations)""",
+                       SUM(dss.total_daily_used) AS burn,
+                       SUM(dss.spare_tank_balance) AS tank,
+                       SUM(dss.blackout_hr) AS blackout_hr
+                   FROM daily_site_summary dss
+                   WHERE dss.date = (SELECT MAX(date) FROM daily_site_summary)""",
                 conn,
             )
 
+            # 3-day avg (prior 3 days, excluding latest)
             avg_3d = pd.read_sql_query(
                 """SELECT
-                       SUM(total_daily_used) / COUNT(DISTINCT date) AS burn,
-                       AVG(buffer_days) AS buffer,
-                       SUM(total_daily_used * COALESCE(
-                           (SELECT fp.price_per_liter
-                            FROM fuel_purchases fp
-                            WHERE fp.sector_id = d.sector_id
-                              AND fp.date <= d.date
-                            ORDER BY fp.date DESC LIMIT 1), 0))
-                       / COUNT(DISTINCT date) AS cost,
-                       SUM(blackout_hr) / COUNT(DISTINCT date) AS blackout_hr
-                   FROM daily_operations d
-                   WHERE d.date >= (
-                       SELECT date(MAX(date), '-3 days') FROM daily_operations
-                   )""",
+                       SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) AS burn,
+                       SUM(dss.blackout_hr) / COUNT(DISTINCT dss.date) AS blackout_hr
+                   FROM daily_site_summary dss
+                   WHERE dss.date >= (SELECT date(MAX(date), '-3 days') FROM daily_site_summary)
+                     AND dss.date < (SELECT MAX(date) FROM daily_site_summary)""",
                 conn,
             )
+
+            # Buffer: last_day_tank / 3d_avg_fuel
+            y_tank = float(yesterday["tank"].iloc[0] or 0)
+            y_burn = float(yesterday["burn"].iloc[0] or 0)
+            a_burn = float(avg_3d["burn"].iloc[0] or 0)
+            y_buffer = y_tank / a_burn if a_burn > 0 else (y_tank / y_burn if y_burn > 0 else 0)
+
+            # Cost via date-specific price lookup
+            max_date_row = conn.execute("SELECT MAX(date) FROM daily_site_summary").fetchone()
+            max_date = max_date_row[0] if max_date_row else None
+            y_cost = 0
+            a_cost = 0
+            if max_date:
+                # Per-sector cost for yesterday
+                sector_fuels = pd.read_sql_query("""
+                    SELECT s.sector_id, SUM(dss.total_daily_used) as fuel
+                    FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id
+                    WHERE dss.date = ? GROUP BY s.sector_id
+                """, conn, params=[max_date])
+                for _, r in sector_fuels.iterrows():
+                    from backend.routers.data import _sector_price_on_date
+                    p = _sector_price_on_date(conn, r["sector_id"], max_date)
+                    y_cost += (r["fuel"] or 0) * p
+
+                # Per-sector cost for 3d avg
+                sector_fuels_3d = pd.read_sql_query("""
+                    SELECT s.sector_id,
+                           SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as fuel
+                    FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id
+                    WHERE dss.date >= date(?, '-3 days') AND dss.date < ?
+                    GROUP BY s.sector_id
+                """, conn, params=[max_date, max_date])
+                for _, r in sector_fuels_3d.iterrows():
+                    p = _sector_price_on_date(conn, r["sector_id"], max_date)
+                    a_cost += (r["fuel"] or 0) * p
+
+            # 3d buffer: use last_day_tank / 3d_avg_burn (same formula)
+            a_buffer = y_tank / a_burn if a_burn > 0 else 0
+            # Override yesterday values
+            yesterday = pd.DataFrame([{
+                "burn": y_burn, "buffer": y_buffer,
+                "cost": y_cost, "blackout_hr": float(yesterday["blackout_hr"].iloc[0] or 0)
+            }])
+            avg_3d = pd.DataFrame([{
+                "burn": a_burn, "buffer": a_buffer,
+                "cost": a_cost, "blackout_hr": float(avg_3d["blackout_hr"].iloc[0] or 0)
+            }])
 
         for col, label in [("burn", "BURN"), ("buffer", "BUFFER"),
                            ("cost", "COST"), ("blackout_hr", "BLACKOUT_HR")]:
@@ -322,28 +356,38 @@ def yesterday_comparison(user: dict = Depends(get_current_user)):
 # ---------- 8b. Period KPIs (Last Day + Last 3 Days) ----------
 
 @router.get("/period-kpis")
-def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(get_current_user)):
+def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, site_type: Optional[str] = None, user: dict = Depends(get_current_user)):
     """Return full KPI blocks for last day and last 3 days avg.
     If date_to is provided, use it as the latest date (from calendar filter).
     """
     try:
         with get_db() as conn:
-            sector_sql = f"AND s.sector_id = '{sector}'" if sector else ""
+            # Build parameterized filter clauses
+            filter_clauses = []
+            filter_params = []
+            if sector:
+                filter_clauses.append("AND s.sector_id = ?")
+                filter_params.append(sector)
+            if site_type and site_type != 'All':
+                filter_clauses.append("AND s.site_type = ?")
+                filter_params.append(site_type)
+            sector_sql = " ".join(filter_clauses)
             if date_to:
                 # Use the provided end date, but find the actual max date <= date_to
-                max_date = conn.execute(f"""
-                    SELECT MAX(dss.date) FROM daily_site_summary dss
-                    JOIN sites s ON dss.site_id = s.site_id WHERE dss.date <= '{date_to}' {sector_sql}
-                """).fetchone()[0]
+                max_date = conn.execute(
+                    f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id WHERE dss.date <= ? {sector_sql}",
+                    [date_to] + filter_params
+                ).fetchone()[0]
             else:
-                max_date = conn.execute(f"""
-                    SELECT MAX(dss.date) FROM daily_site_summary dss
-                    JOIN sites s ON dss.site_id = s.site_id WHERE 1=1 {sector_sql}
-                """).fetchone()[0]
+                max_date = conn.execute(
+                    f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id WHERE 1=1 {sector_sql}",
+                    filter_params
+                ).fetchone()[0]
             if not max_date:
                 return {"last_day": None, "last_3d": None, "max_date": None}
 
-            def _build_kpis(date_filter, label):
+            def _build_kpis(date_filter, label, date_params=None):
+                query_params = (date_params or []) + filter_params
                 df = pd.read_sql_query(f"""
                     SELECT dss.site_id, s.sector_id, dss.date,
                            dss.total_daily_used, dss.spare_tank_balance, dss.days_of_buffer,
@@ -351,7 +395,7 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                     FROM daily_site_summary dss
                     JOIN sites s ON dss.site_id = s.site_id
                     WHERE {date_filter} {sector_sql}
-                """, conn)
+                """, conn, params=query_params)
                 if df.empty:
                     return None
                 n_days = df["date"].nunique()
@@ -360,7 +404,8 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                 site_ids = df["site_id"].unique().tolist()
                 if site_ids:
                     placeholders = ','.join(['?' for _ in site_ids])
-                    n_gens = conn.execute(f"SELECT COUNT(*) FROM generators WHERE is_active=1 AND site_id IN ({placeholders})", site_ids).fetchone()[0]
+                    row = conn.execute(f"SELECT COUNT(*) FROM generators WHERE is_active=1 AND site_id IN ({placeholders})", site_ids).fetchone()
+                    n_gens = row[0] if row else 0
                 else:
                     n_gens = 0
                 # Daily totals per date (for proper averaging)
@@ -371,11 +416,21 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                     daily_blackout=("blackout_hr", lambda x: x.fillna(0).sum()),
                 ).reset_index()
 
-                # For 1 day: tank = SUM of that day. For multi-day: AVG of daily totals
-                tank = float(daily_totals["daily_tank"].mean()) if n_days > 1 else float(daily_totals["daily_tank"].sum())
+                # Tank: always use latest day's SUM (current stock level)
+                daily_totals_sorted = daily_totals.sort_values("date")
+                tank = float(daily_totals_sorted["daily_tank"].iloc[-1])  # last day's tank
                 total_fuel = float(daily_totals["daily_fuel"].sum())
                 burn = total_fuel / max(n_days, 1)
-                buffer = tank / burn if burn > 0 else 0
+                # Buffer: always last_day_tank / 3d_avg_fuel (standardized formula)
+                # Get 3-day avg fuel from prior 3 days for buffer calculation
+                avg3d_fuel_row = conn.execute(f"""
+                    SELECT SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as avg_fuel
+                    FROM daily_site_summary dss
+                    JOIN sites s ON dss.site_id = s.site_id
+                    WHERE dss.date >= date(?, '-3 days') AND dss.date < ? {sector_sql}
+                """, [max_date, max_date] + filter_params).fetchone()
+                avg3d_fuel = avg3d_fuel_row[0] if avg3d_fuel_row and avg3d_fuel_row[0] else burn
+                buffer = tank / avg3d_fuel if avg3d_fuel > 0 else 0
                 total_gen_hr = float(daily_totals["daily_gen_hr"].sum())
                 gen_hr = total_gen_hr / max(n_days, 1)
                 total_blackout = float(daily_totals["daily_blackout"].sum())
@@ -387,21 +442,55 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                 needed = latest[latest["days_of_buffer"] < 7].apply(
                     lambda r: max(0, 7 * (r["total_daily_used"] or 0) - (r["spare_tank_balance"] or 0)), axis=1
                 ).sum() if not latest.empty else 0
-                # Get fuel price
-                price_row = conn.execute(
-                    "SELECT AVG(price_per_liter) FROM fuel_purchases WHERE price_per_liter IS NOT NULL"
-                ).fetchone()
-                price = price_row[0] if price_row and price_row[0] else 0
+                # Get fuel price — date-specific: latest purchase price on or before max_date
+                if sector:
+                    price_row = conn.execute("""
+                        SELECT price_per_liter FROM fuel_purchases
+                        WHERE sector_id = ? AND date <= ? AND price_per_liter IS NOT NULL
+                        ORDER BY date DESC LIMIT 1
+                    """, (sector, max_date)).fetchone()
+                    price = price_row[0] if price_row else 0
+                else:
+                    # Group view: weighted avg of latest sector prices
+                    price_rows = conn.execute("""
+                        SELECT sector_id, price_per_liter FROM fuel_purchases
+                        WHERE price_per_liter IS NOT NULL
+                        GROUP BY sector_id HAVING date = MAX(date)
+                    """).fetchall()
+                    if price_rows:
+                        prices_list = [r["price_per_liter"] for r in price_rows]
+                        price = sum(prices_list) / len(prices_list)
+                    else:
+                        price = 0
                 cost = burn * price
-                # Sales
-                sales_q = f"SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE {date_filter.replace('dss.','').replace('s.','')}"
+                # Sales — use latest available sales date if no sales on ops date
+                sales_date_filter = date_filter.replace('dss.','').replace('s.','')
+                sales_q = f"SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE {sales_date_filter}"
+                sector_sales_filter = " AND sector_id = ?" if sector else ""
+                sector_sales_params = [sector] if sector else []
                 try:
-                    sales = conn.execute(sales_q).fetchone()[0] / max(n_days, 1)
+                    sales = conn.execute(sales_q + sector_sales_filter, sector_sales_params).fetchone()[0] / max(n_days, 1)
                 except Exception:
                     sales = 0
+                # Fallback: if no sales on exact date, try latest available sales date
+                if sales == 0:
+                    try:
+                        max_sales_date = conn.execute(
+                            f"SELECT MAX(date) FROM daily_sales WHERE sales_amt > 0{sector_sales_filter}",
+                            sector_sales_params
+                        ).fetchone()[0]
+                        if max_sales_date:
+                            fallback_sales = conn.execute(
+                                f"SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE date = ?{sector_sales_filter}",
+                                [max_sales_date] + sector_sales_params
+                            ).fetchone()[0]
+                            if fallback_sales > 0:
+                                sales = fallback_sales
+                    except Exception:
+                        pass
                 diesel_pct = (cost / sales * 100) if sales > 0 else 0
-                _bo_mean = df["blackout_hr"].mean() if "blackout_hr" in df.columns else 0
-                blackout = 0 if (pd.isna(_bo_mean) or _bo_mean is None) else float(_bo_mean)
+                # Blackout per site per day (SUM-based: total_blackout / sites / days)
+                blackout = total_blackout / max(n_sites, 1) / max(n_days, 1) if total_blackout > 0 else 0
                 # Critical sites list (for cockpit)
                 crit_sites = []
                 if not latest.empty:
@@ -418,7 +507,7 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                 if pd.isna(efficiency): efficiency = 0
                 # Total sites in system (for data quality)
                 total_sites_q = f"SELECT COUNT(*) FROM sites s WHERE 1=1 {sector_sql}"
-                total_sites_in_system = conn.execute(total_sites_q).fetchone()[0]
+                total_sites_in_system = conn.execute(total_sites_q, filter_params).fetchone()[0]
                 sites_not_reported = total_sites_in_system - n_sites
                 # Sites with missing tank
                 tank_missing = int((latest["spare_tank_balance"].fillna(0) == 0).sum()) if not latest.empty else 0
@@ -451,8 +540,8 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                     "tank_missing": tank_missing,
                 }
 
-            last_day = _build_kpis(f"dss.date = '{max_date}'", "LATEST_DATA")
-            last_3d = _build_kpis(f"dss.date >= date('{max_date}', '-3 days') AND dss.date < '{max_date}'", "PRIOR_3_DAYS_AVG")
+            last_day = _build_kpis("dss.date = ?", "LATEST_DATA", [max_date])
+            last_3d = _build_kpis("dss.date >= date(?, '-3 days') AND dss.date < ?", "PRIOR_3_DAYS_AVG", [max_date, max_date])
 
             # Sector snapshot (for group view)
             sector_snapshot = []
@@ -460,32 +549,48 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                 try:
                     for sec_row in conn.execute("SELECT sector_id, sector_name FROM sectors ORDER BY sector_id").fetchall():
                         sid = sec_row[0]
-                        sec_data = pd.read_sql_query(f"""
+                        sec_data = pd.read_sql_query("""
                             SELECT dss.site_id, dss.total_daily_used, dss.spare_tank_balance, dss.days_of_buffer, dss.blackout_hr
                             FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id
-                            WHERE dss.date = '{max_date}' AND s.sector_id = '{sid}'
-                        """, conn)
+                            WHERE dss.date = ? AND s.sector_id = ?
+                        """, conn, params=[max_date, sid])
                         if sec_data.empty:
                             continue
                         s_tank = sec_data["spare_tank_balance"].fillna(0).sum()
                         s_burn = sec_data["total_daily_used"].fillna(0).sum()
                         s_buf = s_tank / s_burn if s_burn > 0 else 0
                         s_crit = int((sec_data["days_of_buffer"].fillna(0) < 3).sum())
-                        s_bo = sec_data["blackout_hr"].mean() if "blackout_hr" in sec_data.columns else 0
+                        s_bo = sec_data["blackout_hr"].fillna(0).sum() / max(len(sec_data), 1)
                         # Get price for sector
-                        s_price_row = conn.execute(f"SELECT price_per_liter FROM fuel_purchases WHERE sector_id='{sid}' AND price_per_liter IS NOT NULL ORDER BY date DESC LIMIT 1").fetchone()
+                        s_price_row = conn.execute("SELECT price_per_liter FROM fuel_purchases WHERE sector_id=? AND price_per_liter IS NOT NULL ORDER BY date DESC LIMIT 1", [sid]).fetchone()
                         s_price = s_price_row[0] if s_price_row else 0
                         s_cost = s_burn * s_price
                         # Sales
-                        s_sales_row = conn.execute(f"SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE date='{max_date}' AND sector_id='{sid}'").fetchone()
+                        s_sales_row = conn.execute("SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE date=? AND sector_id=?", [max_date, sid]).fetchone()
                         s_sales = s_sales_row[0] if s_sales_row else 0
                         s_dpct = (s_cost / s_sales * 100) if s_sales > 0 else -1
                         status = "🟢" if s_buf >= 7 else "🟡" if s_buf >= 3 else "🔴" if s_burn > 0 else "⚪"
+                        # Generator counts: total and running on latest date
+                        site_ids = sec_data["site_id"].unique().tolist()
+                        total_gens = 0
+                        running_gens = 0
+                        if site_ids:
+                            ph = ','.join(['?' for _ in site_ids])
+                            row_tg = conn.execute(f"SELECT COUNT(*) FROM generators WHERE is_active=1 AND site_id IN ({ph})", site_ids).fetchone()
+                            total_gens = row_tg[0] if row_tg else 0
+                            row_rg = conn.execute(f"""
+                                SELECT COUNT(DISTINCT do.generator_id)
+                                FROM daily_operations do
+                                WHERE do.date = ? AND do.gen_run_hr > 0
+                                  AND do.site_id IN ({ph})
+                            """, [max_date] + site_ids).fetchone()
+                            running_gens = row_rg[0] if row_rg else 0
                         sector_snapshot.append({
                             "sector": sid, "sites": len(sec_data), "buffer": round(s_buf, 1),
                             "burn": round(s_burn), "cost": round(s_cost), "blackout": round(s_bo or 0, 1),
                             "diesel_pct": round(s_dpct, 2) if s_dpct >= 0 else None,
                             "crit": s_crit, "status": status,
+                            "total_gens": total_gens, "running_gens": running_gens,
                         })
                 except Exception:
                     pass
@@ -517,18 +622,45 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, use
                         COUNT(DISTINCT dss.site_id) as sites
                     FROM daily_site_summary dss
                     JOIN sites s ON dss.site_id = s.site_id
-                    WHERE dss.date >= date('{max_date}', '-3 days') {sector_sql}
+                    WHERE dss.date >= date(?, '-3 days') {sector_sql}
                     GROUP BY dss.date ORDER BY dss.date
-                """, conn)
+                """, conn, params=[max_date] + filter_params)
+                # Get sales per date
+                sales_by_date = {}
+                try:
+                    sales_sql = "SELECT date, SUM(sales_amt) as sales FROM daily_sales WHERE date >= date(?, '-3 days')"
+                    sales_params = [max_date]
+                    if sector:
+                        sales_sql += " AND sector_id = ?"
+                        sales_params.append(sector)
+                    sales_sql += " GROUP BY date"
+                    sdf = pd.read_sql_query(sales_sql, conn, params=sales_params)
+                    for _, sr in sdf.iterrows():
+                        sales_by_date[sr["date"]] = float(sr["sales"] or 0)
+                except Exception:
+                    pass
+                # Get sector prices for cost calculation
+                sector_prices = {}
+                for pr in conn.execute("SELECT sector_id, price_per_liter FROM fuel_purchases WHERE price_per_liter IS NOT NULL GROUP BY sector_id HAVING date = MAX(date)").fetchall():
+                    sector_prices[pr[0]] = pr[1]
+                avg_price = sum(sector_prices.values()) / max(len(sector_prices), 1) if sector_prices else 0
+                price = sector_prices.get(sector, avg_price) if sector else avg_price
+
                 for _, r in rdf.iterrows():
                     b = r["fuel"]
                     t = r["tank"] or 0
+                    dt = r["date"]
+                    day_sales = sales_by_date.get(dt, 0)
+                    day_cost = round((b or 0) * price)
+                    day_dpct = round(day_cost / day_sales * 100, 2) if day_sales > 0 else 0
                     recent_daily.append({
-                        "date": r["date"], "gen_hr": round(r["gen_hr"] or 0, 1),
+                        "date": dt, "gen_hr": round(r["gen_hr"] or 0, 1),
                         "fuel": round(b or 0), "tank": round(t),
                         "blackout": round(r["blackout"] or 0, 1),
                         "buffer": round(t / b, 1) if b and b > 0 else 0,
                         "sites": int(r["sites"]),
+                        "sales": round(day_sales), "cost": day_cost,
+                        "diesel_pct": day_dpct,
                     })
             except Exception:
                 pass
@@ -689,17 +821,22 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                 except Exception:
                     pass
 
-            sector_sql = f"AND s.sector_id = '{sector}'" if sector else ""
+            sector_sql = "AND s.sector_id = ?" if sector else ""
+            sector_params = [sector] if sector else []
 
             # Get last N days of data (for averages) + last day tank (for buffer)
+            lookback_days_val = max(lookback-1, 0)
             df = pd.read_sql_query(f"""
                 SELECT s.site_id, s.sector_id, s.site_name, s.site_type, s.company,
                        s.cost_center_code, s.region as site_code, s.segment_name,
                        s.cost_center_description, s.address_state, s.address_township,
                        s.store_size, s.channel, s.latitude, s.longitude,
                        avg_data.avg_fuel as daily_fuel,
+                       avg_data.avg_tank as avg3d_tank,
                        last_data.spare_tank_balance as tank,
                        last_data.days_of_buffer as buffer_days,
+                       last_data.total_daily_used as last_day_fuel,
+                       last_data.blackout_hr as last_day_blackout,
                        avg_data.avg_gen_hr as gen_hr,
                        COALESCE(avg_data.avg_blackout, bo_all.avg_blackout_all) as blackout_hr,
                        avg_data.total_fuel,
@@ -711,11 +848,12 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                            AVG(total_daily_used) as avg_fuel,
                            AVG(total_gen_run_hr) as avg_gen_hr,
                            AVG(CASE WHEN blackout_hr IS NOT NULL AND blackout_hr != '' THEN blackout_hr END) as avg_blackout,
+                           AVG(spare_tank_balance) as avg_tank,
                            SUM(total_daily_used) as total_fuel,
                            SUM(total_gen_run_hr) as total_gen_hr,
                            COUNT(DISTINCT date) as data_days
                     FROM daily_site_summary
-                    WHERE date >= (SELECT date(MAX(date), '-{max(lookback-1, 0)} days') FROM daily_site_summary)
+                    WHERE date >= (SELECT date(MAX(date), '-{lookback_days_val} days') FROM daily_site_summary)
                     GROUP BY site_id
                 ) avg_data ON s.site_id = avg_data.site_id
                 LEFT JOIN (
@@ -725,13 +863,13 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                     GROUP BY site_id
                 ) bo_all ON s.site_id = bo_all.site_id
                 LEFT JOIN (
-                    SELECT site_id, spare_tank_balance, days_of_buffer
+                    SELECT site_id, spare_tank_balance, days_of_buffer, total_daily_used, blackout_hr
                     FROM daily_site_summary
                     WHERE date = (SELECT MAX(date) FROM daily_site_summary)
                 ) last_data ON s.site_id = last_data.site_id
                 WHERE 1=1 {sector_sql}
                 ORDER BY s.sector_id, s.site_id
-            """, conn)
+            """, conn, params=sector_params)
 
             # Get fuel prices per sector
             prices = {}
@@ -754,20 +892,20 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
             last_day_sales = pd.DataFrame()
             avg3d_sales = pd.DataFrame()
             if max_sales_date:
-                last_day_sales = pd.read_sql_query(f"""
+                last_day_sales = pd.read_sql_query("""
                     SELECT site_id, sales_amt as last_day_sales, margin as last_day_margin
-                    FROM daily_sales WHERE date = '{max_sales_date}' AND site_id IS NOT NULL
-                """, conn)
+                    FROM daily_sales WHERE date = ? AND site_id IS NOT NULL
+                """, conn, params=[max_sales_date])
                 # 3D avg sales (3 days before last sales date)
-                avg3d_sales = pd.read_sql_query(f"""
+                avg3d_sales = pd.read_sql_query("""
                     SELECT site_id,
                            AVG(sales_amt) as avg3d_sales,
                            AVG(margin) as avg3d_margin
                     FROM daily_sales
-                    WHERE date >= date('{max_sales_date}', '-3 days') AND date < '{max_sales_date}'
+                    WHERE date >= date(?, '-3 days') AND date < ?
                       AND site_id IS NOT NULL
                     GROUP BY site_id
-                """, conn)
+                """, conn, params=[max_sales_date, max_sales_date])
 
             # Get LY expense per site
             ly = pd.read_sql_query("SELECT cost_center_code, pct_on_sales FROM diesel_expense_ly", conn)
@@ -786,7 +924,7 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                 df["buffer_days"] = np.where(df["daily_fuel"].fillna(0) > 0,
                     df["tank"].fillna(0) / df["daily_fuel"], 0)
                 df["daily_cost"] = (df["daily_fuel"].fillna(0) * df["price"]).round(0)
-                df["total_cost"] = df["daily_cost"]
+                df["total_cost"] = (df["total_fuel"].fillna(0) * df["price"]).round(0)
 
                 if not sales.empty:
                     df = df.merge(sales, on="site_id", how="left")
@@ -803,9 +941,9 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                 else:
                     df["avg3d_sales"] = 0; df["avg3d_margin"] = 0
 
-                # Last day fuel cost
-                df["last_day_fuel_cost"] = df["daily_fuel"].fillna(0) * df["price"]
-                # Avg 3D fuel cost (avg_fuel is already N-day avg from query)
+                # Last day fuel cost (actual last day fuel × price)
+                df["last_day_fuel_cost"] = df["last_day_fuel"].fillna(0) * df["price"]
+                # Avg 3D fuel cost (3d avg fuel × price)
                 df["avg3d_fuel_cost"] = df["daily_fuel"].fillna(0) * df["price"]
 
                 # Exp% calculations
@@ -834,7 +972,24 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
 
                 df = df.fillna(0).round(2)
 
-        return {"sites": _df(df), "count": len(df)}
+            # Sector-level 3d avg fuel for correct summary buffer (matches heatmap formula)
+            sector_3d_avg_fuel = {}
+            try:
+                max_dt = conn.execute("SELECT MAX(date) FROM daily_site_summary").fetchone()[0]
+                if max_dt:
+                    s3d = pd.read_sql_query("""
+                        SELECT s.sector_id,
+                               SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as avg_fuel_3d
+                        FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id
+                        WHERE dss.date >= date(?, '-3 days') AND dss.date < ?
+                        GROUP BY s.sector_id
+                    """, conn, params=[max_dt, max_dt])
+                    for _, r in s3d.iterrows():
+                        sector_3d_avg_fuel[r["sector_id"]] = round(r["avg_fuel_3d"], 1)
+            except Exception:
+                pass
+
+        return {"sites": _df(df), "count": len(df), "sector_3d_avg_fuel": sector_3d_avg_fuel}
     except Exception as e:
         return {"sites": [], "count": 0}
 

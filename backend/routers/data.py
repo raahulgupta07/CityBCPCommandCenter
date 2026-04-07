@@ -24,6 +24,26 @@ def _dsql(col: str, date_from: str = None, date_to: str = None):
     return sql, params
 
 
+def _sector_price_on_date(conn, sector_id, date):
+    """Latest purchase price for a sector on or before a given date."""
+    row = conn.execute("""
+        SELECT price_per_liter FROM fuel_purchases
+        WHERE sector_id = ? AND date <= ? AND price_per_liter IS NOT NULL
+        ORDER BY date DESC LIMIT 1
+    """, (sector_id, date)).fetchone()
+    return row[0] if row else 0
+
+
+def _sector_prices_latest(conn):
+    """Latest fuel price per sector (most recent purchase date)."""
+    rows = conn.execute("""
+        SELECT sector_id, price_per_liter, date FROM fuel_purchases
+        WHERE price_per_liter IS NOT NULL
+        GROUP BY sector_id HAVING date = MAX(date)
+    """).fetchall()
+    return {r["sector_id"]: r["price_per_liter"] for r in rows}
+
+
 # ─── 1.6 Upload ──────────────────────────────────────────
 @router.post("/upload/validate")
 async def validate_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
@@ -37,26 +57,28 @@ async def validate_file(file: UploadFile = File(...), user: dict = Depends(get_c
         tmp_path = tmp.name
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(tmp_path, read_only=True)
+        from itertools import islice
+
+        wb = openpyxl.load_workbook(tmp_path, read_only=True, data_only=True)
         sheets = wb.sheetnames
-        wb.close()
+        sheets_lower = [s.lower().strip() for s in sheets]
+
+        # Get row counts from XML metadata — no cell parsing needed
+        sheet_rows = {}
+        for sn in sheets:
+            ws = wb[sn]
+            sheet_rows[sn] = max((ws.max_row or 1) - 1, 0)  # subtract header
 
         # Detect type by sheet names
         detected_type = None
-        sheets_lower = [s.lower().strip() for s in sheets]
 
         if any(s in sheets_lower for s in ["daily sales", "daily_sales", "hourly sales", "hourly_sales"]):
-            # Check row count to classify as daily vs reference
-            try:
-                import pandas as _pd
-                for sn in sheets:
-                    if "daily" in sn.lower() and "sales" in sn.lower():
-                        row_count = len(_pd.read_excel(tmp_path, sheet_name=sn, nrows=15000))
-                        detected_type = "sales_reference" if row_count > 10000 else "combo_sales"
-                        break
-                if not detected_type:
-                    detected_type = "combo_sales"
-            except Exception:
+            # Use metadata row count to classify (no pandas read needed)
+            for sn in sheets:
+                if "daily" in sn.lower() and "sales" in sn.lower():
+                    detected_type = "sales_reference" if sheet_rows.get(sn, 0) > 10000 else "combo_sales"
+                    break
+            if not detected_type:
                 detected_type = "combo_sales"
         elif len(sheets) >= 3 and sum(s in sheets_lower for s in ["cmhl", "cp", "cfc", "pg"]) >= 3:
             detected_type = "fuel_price"
@@ -69,43 +91,38 @@ async def validate_file(file: UploadFile = File(...), user: dict = Depends(get_c
         elif "pg" in sheets_lower:
             detected_type = "blackout_pg"
         else:
-            # Check content of first sheet for specific patterns
+            # Read first 2 rows from openpyxl (not pandas) — near instant
             try:
-                import pandas as _pd
-                _df = _pd.read_excel(tmp_path, sheet_name=0, nrows=5)
-                all_text = ' '.join(str(c).lower() for c in _df.columns) + ' ' + ' '.join(str(v).lower() for v in _df.iloc[0].values if v is not None)
+                ws = wb[sheets[0]]
+                first_rows = list(islice(ws.iter_rows(max_row=2, values_only=True), 2))
+                cols_text = ' '.join(str(c).lower() for c in first_rows[0] if c) if first_rows else ''
+                vals_text = ' '.join(str(v).lower() for v in first_rows[1] if v) if len(first_rows) > 1 else ''
+                all_text = cols_text + ' ' + vals_text
 
                 if "daily average diesel" in all_text or "daily normal diesel" in all_text or "diesel expense" in all_text:
                     detected_type = "diesel_expense_ly"
                 elif "daily sales" in all_text or "sales_amt" in all_text:
                     detected_type = "daily_sales"
                 elif "store exp" in all_text or "expense percentage" in all_text or "store contribution" in all_text:
-                    detected_type = "diesel_expense_ly"  # treat as reference data
+                    detected_type = "diesel_expense_ly"
                 elif "gold_code" in all_text or "goldcode" in all_text or "store master" in all_text:
                     detected_type = "store_master"
             except Exception:
                 pass
 
+        wb.close()
+
         if not detected_type:
             raise HTTPException(400, f"UNKNOWN_FILE_TYPE — sheets: {', '.join(sheets)}")
 
-        # Estimate row count
+        # Row estimate from metadata (already collected above — no extra reads)
         row_estimate = 0
-        try:
-            import pandas as _pd2
-            for sn in sheets:
-                sn_lower = sn.lower().strip()
-                if sn_lower in ("cmhl", "cp", "cfc", "pg") or "daily" in sn_lower or "sales" in sn_lower or "hourly" in sn_lower:
-                    df_peek = _pd2.read_excel(tmp_path, sheet_name=sn)
-                    row_estimate += len(df_peek)
-                elif sn_lower in ("sheet1", "data"):
-                    df_peek = _pd2.read_excel(tmp_path, sheet_name=sn)
-                    row_estimate += len(df_peek)
-            if row_estimate == 0:
-                df_peek = _pd2.read_excel(tmp_path, sheet_name=0)
-                row_estimate = len(df_peek)
-        except Exception:
-            pass
+        for sn in sheets:
+            sn_lower = sn.lower().strip()
+            if sn_lower in ("cmhl", "cp", "cfc", "pg") or "daily" in sn_lower or "sales" in sn_lower or "hourly" in sn_lower or sn_lower in ("sheet1", "data"):
+                row_estimate += sheet_rows.get(sn, 0)
+        if row_estimate == 0:
+            row_estimate = sheet_rows.get(sheets[0], 0)
 
         return {"type": detected_type, "sheets": sheets, "filename": file.filename, "rows": row_estimate}
     except HTTPException:
@@ -272,13 +289,13 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_cur
 
                     # 3. DB totals
                     import pandas as _pd
-                    _dbdf = _pd.read_sql_query(f"""
+                    _dbdf = _pd.read_sql_query("""
                         SELECT dss.date, SUM(dss.total_gen_run_hr) as gen_hr, SUM(dss.total_daily_used) as fuel,
                                SUM(dss.spare_tank_balance) as tank, SUM(dss.blackout_hr) as blackout,
                                COUNT(DISTINCT dss.site_id) as sites
                         FROM daily_site_summary dss JOIN sites s ON s.site_id=dss.site_id
-                        WHERE s.sector_id='{sector}' GROUP BY dss.date ORDER BY dss.date
-                    """, conn)
+                        WHERE s.sector_id=? GROUP BY dss.date ORDER BY dss.date
+                    """, conn, params=[sector])
                     _dbtot = {}
                     for _, _r in _dbdf.iterrows():
                         _dbtot[_r["date"]] = {"gen_hr":_r["gen_hr"] or 0,"fuel":_r["fuel"] or 0,"tank":_r["tank"] or 0,"blackout":_r["blackout"] or 0,"sites":int(_r["sites"])}

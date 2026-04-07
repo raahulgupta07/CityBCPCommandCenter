@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { hbarChart } from '$lib/charts';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	const guides: Record<string, any> = {
 		fuel_used: {
@@ -79,6 +80,8 @@
 	}
 </script>
 
+<AiInsightPanel type="table" data={{ tab: 'rankings', summary: 'Top sites ranked by diesel cost and diesel percentage of sales' }} title="AI INSIGHT — SITE RANKINGS" />
+
 {#if loading}
 	<p class="text-sm py-4 text-center" style="color: #65655e;">Loading rankings...</p>
 {:else}
@@ -112,3 +115,26 @@
 		{/each}
 	</div>
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead><tr style="background: #ebe8dd;">
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+			</tr></thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #9d4867;">DIESEL COST RANK</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) &times; price, sorted desc</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">DIESEL % RANK</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">(cost &divide; sales) &times; 100, sorted desc</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">FUEL USED RANK</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) per site, sorted desc</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ff9d00;">GEN HOURS RANK</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(gen_run_hr) per site, sorted desc</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+			</tbody>
+		</table>
+	</div>
+</div>

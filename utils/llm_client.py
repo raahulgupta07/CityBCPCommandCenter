@@ -63,13 +63,34 @@ def _call_openrouter(messages, tools=None, model=None, max_tokens=4096, temperat
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
+    # Sanitize messages for OpenRouter/Gemini compatibility
+    clean_msgs = []
+    for m in messages:
+        cm = dict(m)
+        # Gemini requires content to be a string, not None
+        if cm.get("content") is None:
+            cm["content"] = ""
+        # Convert role "tool" to format OpenRouter expects
+        if cm.get("role") == "tool" and "tool_call_id" in cm:
+            cm = {"role": "tool", "tool_call_id": cm["tool_call_id"], "content": str(cm.get("content", ""))}
+        clean_msgs.append(cm)
+    payload["messages"] = clean_msgs
+
     try:
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers, json=payload, timeout=60,
+            headers=headers, json=payload, timeout=120,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            try:
+                err_body = resp.json()
+                err_msg = err_body.get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                err_msg = resp.text[:300]
+            return {"error": f"OpenRouter {resp.status_code}: {err_msg}"}
         return resp.json()
+    except requests.exceptions.Timeout:
+        return {"error": "LLM request timed out (120s). Try a simpler question."}
     except Exception as e:
         return {"error": str(e)}
 

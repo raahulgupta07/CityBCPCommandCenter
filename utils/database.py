@@ -310,6 +310,17 @@ CREATE INDEX IF NOT EXISTS idx_daily_sales_site ON daily_sales(sales_site_name, 
 CREATE INDEX IF NOT EXISTS idx_hourly_sales_date ON hourly_sales(date);
 CREATE INDEX IF NOT EXISTS idx_hourly_sales_site ON hourly_sales(sales_site_name, date);
 CREATE INDEX IF NOT EXISTS idx_store_master_sector ON store_master(sector_id);
+
+-- 21. Chat Messages (per-user chat history)
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tools TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id, created_at);
 """
 
 def init_db():

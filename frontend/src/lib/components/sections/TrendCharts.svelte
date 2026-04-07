@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { barChart, lineChart, dualAxisChart } from '$lib/charts';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	let { dateFrom = '', dateTo = '', sector = '' }: { dateFrom?: string; dateTo?: string; sector?: string } = $props();
 
@@ -110,6 +111,8 @@
 
 	const sectorColors: Record<string, string> = { CMHL: '#FF9800', CP: '#2196F3', CFC: '#4CAF50', PG: '#9C27B0' };
 </script>
+
+<AiInsightPanel type="kpi" data={{ tab: 'trends', total_days: daily.length, latest_date: daily.length ? daily[daily.length - 1]?.date : '', metrics: 'fuel consumption, blackout hours, generator hours, efficiency trends' }} title="AI INSIGHT — TRENDS & PATTERNS" />
 
 {#if loading}
 	<div class="space-y-4 py-4">
@@ -398,3 +401,36 @@
 	</div>
 
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead><tr style="background: #ebe8dd;">
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+			</tr></thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">AVG BLACKOUT HR</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(blackout_hr) &divide; COUNT(sites) per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">AVG FUEL / SITE</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) &divide; COUNT(sites) per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #64748b;">SITES REPORTING</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">COUNT(sites with data) per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #3b82f6;">TOTAL GEN HOURS</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(gen_run_hr) per date, all sites</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ef4444;">TOTAL FUEL USED</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) per date, all sites</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #8b5cf6;">EFFICIENCY (L/Hr)</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) &divide; SUM(gen_run_hr) per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">FUEL BY SECTOR</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) per sector per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ff9d00;">AVG GEN HR / SITE</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(gen_run_hr) &divide; COUNT(sites) per sector per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #9d4867;">DIESEL COST</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) &times; sector_price &divide; 1M per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #3b82f6;">SALES vs COST</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(sales_amt) &divide; 1M (bars) vs diesel_cost &divide; 1M (line)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_sales + derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #ef4444;">DIESEL % SALES</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">(diesel_cost &divide; sales) &times; 100</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #007518;">BUFFER DAYS</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(spare_tank) &divide; SUM(daily_used) per sector per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #dc2626;">CRITICAL SITES</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">COUNT(sites WHERE buffer &lt; 3 days)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_site_summary</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #65655e;">EFFICIENCY / SECTOR</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(daily_used) &divide; SUM(gen_run_hr) per sector per date</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+			</tbody>
+		</table>
+	</div>
+</div>

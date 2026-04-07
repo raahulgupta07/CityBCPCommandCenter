@@ -5,7 +5,7 @@ services:
     build: .
     container_name: city-bcp-agent
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
       - bcp-data:/app/db
     env_file:

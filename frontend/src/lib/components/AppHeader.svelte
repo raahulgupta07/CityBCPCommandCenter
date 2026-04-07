@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api } from '$lib/api';
+	import { api, API_BASE } from '$lib/api';
 	import { onMount } from 'svelte';
 
 	let { currentUser = null }: { currentUser?: any } = $props();
@@ -13,7 +13,7 @@
 		try {
 			const token = localStorage.getItem('token');
 			if (!token) return;
-			const res = await fetch('http://localhost:8000/api/alerts/active', {
+			const res = await fetch(`${API_BASE}/alerts/active`, {
 				headers: { 'Authorization': `Bearer ${token}` }
 			});
 			if (res.ok) {
@@ -23,13 +23,16 @@
 		} catch {}
 	});
 
-	const nav = [
-		{ label: 'DASHBOARD', href: '/dashboard' },
-		{ label: 'DICTIONARY', href: '/dashboard?view=dictionary' },
-		{ label: 'BCP_CHAT', href: '/chat' },
-		{ label: 'DATA_ENTRY', href: '/upload' },
-		{ label: 'SETTINGS', href: '/settings' },
+	const allNav = [
+		{ label: 'DASHBOARD', href: '/dashboard', minRole: 'user' },
+		{ label: 'BCP_CHAT', href: '/chat', minRole: 'user' },
+		{ label: 'DICTIONARY', href: '/dashboard?view=dictionary', minRole: 'user' },
+		{ label: 'DATA_ENTRY', href: '/upload', minRole: 'admin' },
+		{ label: 'SETTINGS', href: '/settings', minRole: 'super_admin' },
 	];
+
+	const roleLevel: Record<string, number> = { 'user': 1, 'admin': 2, 'super_admin': 3 };
+	const nav = $derived(allNav.filter(n => roleLevel[currentUser?.role || 'user'] >= roleLevel[n.minRole]));
 
 	function isActive(href: string) {
 		const path = page.url.pathname;
@@ -56,14 +59,6 @@
 			</nav>
 		</div>
 		<div class="flex items-center gap-4">
-			<!-- Alert bell -->
-			<div class="relative cursor-pointer" title="{alertCount} critical alerts">
-				<span class="material-symbols-outlined text-lg" style="color: {alertCount > 0 ? '#be2d06' : '#383832'};">notifications</span>
-				{#if alertCount > 0}
-					<span class="absolute -top-1 -right-1 w-4 h-4 rounded-full text-[8px] font-black flex items-center justify-center"
-						style="background: #be2d06; color: white;">{alertCount}</span>
-				{/if}
-			</div>
 			<!-- Site Search -->
 			<div class="relative">
 				<button onclick={() => searchOpen = !searchOpen}

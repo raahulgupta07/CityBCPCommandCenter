@@ -20,6 +20,7 @@
 	import SectorSites from '$lib/components/sections/SectorSites.svelte';
 	import SiteModal from '$lib/components/SiteModal.svelte';
 	import Dictionary from '$lib/components/sections/Dictionary.svelte';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 
@@ -43,7 +44,6 @@
 		{ id: 'risk', label: 'WHAT\'S AT RISK', icon: 'warning', sub: 'Alerts & Scores', step: '05' },
 		{ id: 'fuel', label: 'FUEL & COST', icon: 'local_gas_station', sub: 'Intel & Budget', step: '06' },
 		{ id: 'predictions', label: 'WHAT\'S NEXT', icon: 'query_stats', sub: 'Forecast & Actions', step: '07' },
-		{ id: 'ai', label: 'ASK AI', icon: 'psychology', sub: 'Chat & Insights', step: '08' },
 	];
 
 	// Filter state
@@ -152,9 +152,10 @@
 				}
 				const sp = effSector ? `?sector=${effSector}` : '';
 				const dtParam = dateTo ? `${sp ? '&' : '?'}date_to=${dateTo}` : '';
+				const typeParam = siteType !== 'All' ? `${(sp || dtParam) ? '&' : '?'}site_type=${siteType}` : '';
 				const [c, pk, ms, bc, tr] = await Promise.all([
 					api.get('/yesterday-comparison'),
-					api.get(`/period-kpis${sp}${dtParam}`),
+					api.get(`/period-kpis${sp}${dtParam}${typeParam}`),
 					api.get(`/monthly-summary${sp}`).catch(() => []),
 					api.get(`/blackout-calendar${sp}`).catch(() => ({ days: [] })),
 					api.get('/transfers').catch(() => ({ transfers: [] })),
@@ -173,11 +174,11 @@
 	$effect(() => { sector; activeCompany = 'All'; company = 'All Companies'; siteId = 'All Sites'; selectedSites = []; });
 	$effect(() => { activeCompany; selectedSites = []; });
 	$effect(() => {
-		// Re-fetch period KPIs when sector or company changes
+		// Re-fetch period KPIs when sector, company, or siteType changes
 		const s = sector;
 		const c = activeCompany;
+		const t = siteType;
 		if (!loading) {
-			// Determine effective sector: if company is selected, find its sector from econ data
 			let effectiveSector = s !== 'All Sectors' ? s : '';
 			if (!effectiveSector && c !== 'All') {
 				const match = econ.find((e: any) => e.company === c);
@@ -185,7 +186,8 @@
 			}
 			const sp = effectiveSector ? `?sector=${effectiveSector}` : '';
 			const dt2 = dateTo ? `${sp ? '&' : '?'}date_to=${dateTo}` : '';
-			api.get(`/period-kpis${sp}${dt2}`).then(pk => { periodKpis = pk; }).catch(() => {});
+			const tp = t !== 'All' ? `${(sp || dt2) ? '&' : '?'}site_type=${t}` : '';
+			api.get(`/period-kpis${sp}${dt2}${tp}`).then(pk => { periodKpis = pk; }).catch(() => {});
 		}
 	});
 
@@ -530,7 +532,37 @@
 				{@const td = periodKpis.last_3d}
 				{@const opModes = periodKpis.operating_modes || { OPEN: 0, MONITOR: 0, REDUCE: 0, CLOSE: 0 }}
 				{@const sectorSnap = periodKpis.sector_snapshot || []}
-				<div class="space-y-4">
+				<div class="space-y-4 section-animate">
+
+					<!-- AI Executive Briefing (top of overview) -->
+					{#if periodKpis.last_day}
+						{@const aiData = {
+							date: periodKpis.last_day.date,
+							sites_reporting: periodKpis.last_day.sites,
+							total_sites: periodKpis.last_day.total_sites,
+							generators: periodKpis.last_day.generators,
+							buffer_days: periodKpis.last_day.buffer,
+							buffer_3d: periodKpis.last_3d?.buffer,
+							buffer_change_pct: periodKpis.last_3d?.buffer ? Math.round((periodKpis.last_day.buffer - periodKpis.last_3d.buffer) / Math.max(periodKpis.last_3d.buffer, 0.1) * 100) : 0,
+							total_fuel: periodKpis.last_day.total_fuel,
+							fuel_3d_avg: periodKpis.last_3d?.burn,
+							total_gen_hr: periodKpis.last_day.total_gen_hr,
+							total_tank: periodKpis.last_day.tank,
+							total_blackout: periodKpis.last_day.total_blackout,
+							blackout_per_site: periodKpis.last_day.blackout_per_site,
+							cost: periodKpis.last_day.cost,
+							fuel_price: periodKpis.last_day.fuel_price,
+							sales: periodKpis.last_day.sales,
+							diesel_pct: periodKpis.last_day.diesel_pct,
+							efficiency: periodKpis.last_day.efficiency,
+							critical_sites: periodKpis.last_day.crit,
+							warning_sites: periodKpis.last_day.warn,
+							safe_sites: periodKpis.last_day.safe,
+							sites_not_reported: periodKpis.last_day.sites_not_reported,
+							sector_snapshot: periodKpis.sector_snapshot || [],
+						}}
+						<AiInsightPanel type="executive" data={aiData} title="AI EXECUTIVE BRIEFING — OVERVIEW" />
+					{/if}
 
 					<!-- ═══ UNIFIED COCKPIT: LATEST vs 3D ═══ -->
 					{#if ld}
@@ -538,7 +570,7 @@
 						{@const bl1 = ld.buffer >= 7 ? 'SAFE' : ld.buffer >= 3 ? 'WARNING' : 'CRITICAL'}
 						{@const daysAgo = Math.floor((Date.now() - new Date(ld.date).getTime()) / 86400000)}
 						{@const ageColor = daysAgo <= 1 ? '#007518' : daysAgo <= 3 ? '#ff9d00' : '#be2d06'}
-						{@const fmtV = (v: number) => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : v.toLocaleString()}
+						{@const fmtV = (v: number) => { if (v >= 1e9) return (v/1e9).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'B'; if (v >= 1e6) return (v/1e6).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'M'; if (v >= 1e3) return (v/1e3).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'K'; return v.toLocaleString(); }}
 						<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
 							<!-- Header -->
 							<div class="px-4 py-2 flex justify-between items-center" style="background: #383832; color: #feffd6;">
@@ -554,21 +586,66 @@
 								</div>
 							{/if}
 
-							<!-- Buffer Hero -->
-							<div class="p-6 text-center" style="background: white; border-bottom: 2px solid #383832;">
-								<div class="text-5xl sm:text-7xl font-black" style="color: {bc1};">{ld.buffer}</div>
-								<div class="text-lg font-bold mt-2" style="color: #383832;">DAYS OF FUEL LEFT</div>
-								{#if td}
-									{@const bufDiff = td.buffer ? ((ld.buffer - td.buffer) / Math.max(td.buffer, 0.1) * 100) : 0}
-									<div class="text-sm font-bold mt-1" style="color: {bufDiff > 1 ? '#007518' : bufDiff < -1 ? '#be2d06' : '#65655e'};">
-										{bufDiff > 1 ? '▲' : bufDiff < -1 ? '▼' : '→'} {Math.abs(bufDiff).toFixed(0)}% vs Prior 3 Days ({td.buffer}d)
+							<!-- Buffer Hero + Daily Buffer Chart side by side -->
+							{#if true}
+							{@const rd = periodKpis.recent_daily || []}
+							{@const bufVals = rd.map((d: any) => d.buffer || 0)}
+							{@const bufMax = Math.max(...bufVals, 20)}
+							{@const buf3 = td?.buffer || (rd.length >= 4 ? (bufVals[0] + bufVals[1] + bufVals[2]) / 3 : 0)}
+							<div class="flex flex-col lg:flex-row" style="background: white; border-bottom: 2px solid #383832;">
+								<!-- Left: Buffer Hero -->
+								<div class="p-6 text-center flex flex-col justify-center" style="flex: 0 0 380px; border-right: 2px solid #383832;">
+									<div class="text-5xl sm:text-7xl font-black" style="color: {bc1};">{ld.buffer}</div>
+									<div class="text-lg font-bold mt-2" style="color: #383832;">DAYS OF FUEL LEFT</div>
+									{#if td}
+										{@const bufDiff = td.buffer ? ((ld.buffer - td.buffer) / Math.max(td.buffer, 0.1) * 100) : 0}
+										<div class="text-sm font-bold mt-1" style="color: {bufDiff > 1 ? '#007518' : bufDiff < -1 ? '#be2d06' : '#65655e'};">
+											{bufDiff > 1 ? '▲' : bufDiff < -1 ? '▼' : '→'} {Math.abs(bufDiff).toFixed(0)}% vs Prior 3 Days ({td.buffer}d)
+										</div>
+									{/if}
+									<div class="mx-auto mt-3 h-4 overflow-hidden w-full" style="background: #ebe8dd; border: 2px solid #383832; max-width: 240px;">
+										<div class="h-full" style="background: {bc1}; width: {Math.min(100, ld.buffer / 20 * 100)}%;"></div>
 									</div>
-								{/if}
-								<div class="mx-auto mt-3 h-4 overflow-hidden" style="background: #ebe8dd; border: 2px solid #383832; max-width: 500px;">
-									<div class="h-full" style="background: {bc1}; width: {Math.min(100, ld.buffer / 20 * 100)}%;"></div>
+									<div class="text-xs mt-1" style="color: #65655e;">{Math.round(ld.buffer / 20 * 100)}% of 20-day target</div>
 								</div>
-								<div class="text-xs mt-1" style="color: #65655e;">{Math.round(ld.buffer / 20 * 100)}% of 20-day target</div>
+								<!-- Right: Daily Buffer Bar Chart -->
+								<div class="flex-1" style="border-top: none;">
+									<div class="px-3 py-1.5" style="background: #383832; color: #feffd6;">
+										<span class="text-[11px] font-black uppercase">BUFFER DAYS — DAILY</span>
+									</div>
+									{#each rd as day, di}
+										{@const isLatest = di === rd.length - 1}
+										{@const bv = bufVals[di]}
+										{@const bPct = bufMax > 0 ? (bv / bufMax * 100) : 0}
+										{@const bClr = bv >= 7 ? '#007518' : bv >= 3 ? '#ff9d00' : '#be2d06'}
+										{#if isLatest && rd.length >= 4}
+											<div class="px-3 py-0.5 flex items-center gap-2" style="border-top: 2px dashed #007518;">
+												<span class="text-[8px] font-bold" style="color: #007518;">3D AVG: {buf3.toFixed(1)}d</span>
+											</div>
+										{/if}
+										<div class="px-3 py-1 flex items-center gap-2" style="border-top: 1px solid {isLatest ? bClr : 'rgba(56,56,50,0.08)'}; {isLatest ? 'background: rgba(56,56,50,0.03);' : ''}">
+											<span class="text-[9px] w-10 shrink-0 {isLatest ? 'font-black' : ''}" style="color: {isLatest ? bClr : '#828179'};">{day.date.slice(5)}</span>
+											<div class="flex-1 h-4 relative" style="background: #f0ede3;">
+												<div class="h-full" style="width: {bPct}%; background: {isLatest ? bClr : bClr + '60'};"></div>
+												{#if buf3 > 0}
+													<div class="absolute top-0 h-full w-px" style="left: {Math.min(buf3/bufMax*100, 100)}%; background: #007518; opacity: 0.5;"></div>
+												{/if}
+											</div>
+											<span class="text-[9px] w-12 text-right shrink-0 font-bold {isLatest ? 'font-black' : ''}" style="color: {bClr};">{bv.toFixed(1)}d</span>
+											<span class="text-[8px] w-16 text-right shrink-0" style="color: #9d9d91;">{fmtV(day.tank)}L / {fmtV(day.fuel)}L</span>
+											{#if isLatest && buf3 > 0}
+												{@const vsAvg = (bv - buf3) / buf3 * 100}
+												<span class="text-[8px] font-bold w-14 text-right shrink-0" style="color: {vsAvg > 1 ? '#007518' : vsAvg < -1 ? '#be2d06' : '#65655e'};">{vsAvg > 0 ? '▲' : vsAvg < 0 ? '▼' : '→'}{Math.abs(vsAvg).toFixed(0)}%</span>
+											{:else}
+												<span class="w-14 shrink-0"></span>
+											{/if}
+										</div>
+									{/each}
+									<div class="px-3 py-1 text-[8px] font-mono" style="background: #f6f4e9; color: #9d9d91; border-top: 1px solid #ebe8dd;">tank ÷ 3d_avg_fuel</div>
+								</div>
 							</div>
+
+							{/if}
 
 							<!-- KPI Cards: Option 3 — Compact with horizontal bars -->
 							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
@@ -599,9 +676,9 @@
 									{@const tArr = tDiff > 1 ? '▲' : tDiff < -1 ? '▼' : '→'}
 									{@const vals = rd.map((d: any) => d[m.key] || 0)}
 									{@const maxVal = Math.max(...vals, 1)}
-									{@const avg3 = rd.length >= 4 ? (vals[0] + vals[1] + vals[2]) / 3 : 0}
+									{@const avg3 = m.t3 || (rd.length >= 4 ? (vals[0] + vals[1] + vals[2]) / 3 : 0)}
 									{@const sites = rd.map((d: any) => d.sites || 1)}
-									{@const avg3PerSite = rd.length >= 4 ? ((vals[0]/sites[0] + vals[1]/sites[1] + vals[2]/sites[2]) / 3) : 0}
+									{@const avg3PerSite = m.s3 || (rd.length >= 4 ? ((vals[0]/sites[0] + vals[1]/sites[1] + vals[2]/sites[2]) / 3) : 0)}
 									<div style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
 										<!-- Header -->
 										<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
@@ -663,23 +740,28 @@
 								{/each}
 							</div>
 
-							<!-- Sales, Cost, Diesel% — same card style as KPI cards above -->
+							<!-- Sales, Cost, Diesel% — same card style with bar charts -->
 							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
 								{#each [
 									{ t1: ld.has_sales ? ld.sales : 0, t3: td?.has_sales ? td.sales : 0, tl: 'SALES (MMK)', tc: 'SUM(sales_amt)',
 									  s1: ld.has_sales && ld.sites > 0 ? ld.sales / ld.sites : 0, s3: td && td.has_sales && td.sites > 0 ? td.sales / td.sites : 0, sl: '/SITE', sdec: 0,
-									  good: 'high', color: '#006f7c', na: !ld.has_sales },
+									  good: 'high', key: 'sales', color: '#006f7c', na: !ld.has_sales },
 									{ t1: ld.cost, t3: td?.cost || 0, tl: 'DIESEL COST (MMK)', tc: 'burn × fuel_price',
 									  s1: ld.sites > 0 ? ld.cost / ld.sites : 0, s3: td && td.sites > 0 ? td.cost / td.sites : 0, sl: '/SITE', sdec: 0,
-									  good: 'low', color: '#9d4867', na: false },
+									  good: 'low', key: 'cost', color: '#9d4867', na: false },
 									{ t1: ld.has_sales ? ld.diesel_pct : 0, t3: td?.has_sales ? td.diesel_pct : 0, tl: 'DIESEL % OF SALES', tc: 'cost ÷ sales × 100', tdec: 2,
 									  s1: 0, s3: 0, sl: '', sdec: 0, noSite: true,
-									  good: 'low', color: ld.has_sales && ld.diesel_pct > 3 ? '#be2d06' : '#007518', na: !ld.has_sales },
-								] as m}
+									  good: 'low', key: 'diesel_pct', color: ld.has_sales && ld.diesel_pct > 3 ? '#be2d06' : '#007518', na: !ld.has_sales },
+								] as m, i}
+									{@const rd = periodKpis.recent_daily || []}
 									{@const tDiff = m.t3 ? ((m.t1 - m.t3) / Math.max(Math.abs(m.t3), 0.01) * 100) : 0}
 									{@const tImpr = m.good === 'high' ? tDiff > 1 : tDiff < -1}
 									{@const tClr = Math.abs(tDiff) < 1 ? '#65655e' : tImpr ? '#007518' : '#be2d06'}
 									{@const tArr = tDiff > 1 ? '▲' : tDiff < -1 ? '▼' : '→'}
+									{@const vals = rd.map((d: any) => d[m.key] || 0)}
+									{@const maxVal = Math.max(...vals, 1)}
+									{@const avg3 = m.t3 || (rd.length >= 4 ? (vals[0] + vals[1] + vals[2]) / 3 : 0)}
+									{@const sites = rd.map((d: any) => d.sites || 1)}
 									<div style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
 										<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
 											<span class="text-[11px] font-black uppercase">{m.tl}</span>
@@ -700,6 +782,40 @@
 													<div class="text-[8px]" style="color: #9d9d91;">3D: {m.na ? 'N/A' : fmtV(m.s3)}</div>
 												</div>
 											{/if}
+										</div>
+										<!-- Horizontal bar chart with daily values -->
+										<div style="border-top: 1px solid #ebe8dd;">
+											{#each rd as day, di}
+												{@const isLatest = di === rd.length - 1}
+												{@const v = vals[di]}
+												{@const pct = maxVal > 0 ? (v / maxVal * 100) : 0}
+												{@const perSite = sites[di] > 0 ? v / sites[di] : 0}
+												{#if isLatest && rd.length >= 4}
+													<div class="px-3 py-0.5 flex items-center gap-2" style="border-top: 2px dashed {m.color};">
+														<span class="text-[8px] font-bold" style="color: {m.color};">3D AVG: {m.tdec ? avg3.toFixed(m.tdec) + '%' : fmtV(Math.round(avg3))}{m.noSite ? '' : ' (' + fmtV(Math.round(avg3 / ((sites[0]+sites[1]+sites[2])/3))) + m.sl + ')'}</span>
+													</div>
+												{/if}
+												<div class="px-3 py-1 flex items-center gap-2" style="border-top: 1px solid {isLatest ? m.color : 'rgba(56,56,50,0.08)'}; {isLatest ? 'background: rgba(56,56,50,0.03);' : ''}">
+													<span class="text-[9px] w-10 shrink-0 {isLatest ? 'font-black' : ''}" style="color: {isLatest ? m.color : '#828179'};">{day.date.slice(5)}</span>
+													<div class="flex-1 h-4 relative" style="background: #f0ede3;">
+														<div class="h-full" style="width: {pct}%; background: {isLatest ? m.color : m.color + '60'};"></div>
+														{#if avg3 > 0}
+															<div class="absolute top-0 h-full w-px" style="left: {Math.min(avg3/maxVal*100, 100)}%; background: {m.color}; opacity: 0.5;"></div>
+														{/if}
+													</div>
+													<span class="text-[9px] w-12 text-right shrink-0 {isLatest ? 'font-black' : ''}" style="color: #383832;">{m.tdec ? v.toFixed(m.tdec) + '%' : fmtV(Math.round(v))}</span>
+													{#if !m.noSite}
+														<span class="text-[8px] w-12 text-right shrink-0" style="color: #9d9d91;">{fmtV(Math.round(perSite))}{m.sl}</span>
+													{/if}
+													{#if isLatest && avg3 > 0}
+														{@const vsAvg = (v - avg3) / avg3 * 100}
+														{@const vClr = (m.good === 'high' ? vsAvg > 1 : vsAvg < -1) ? '#007518' : (m.good === 'high' ? vsAvg < -1 : vsAvg > 1) ? '#be2d06' : '#65655e'}
+														<span class="text-[8px] font-bold w-14 text-right shrink-0" style="color: {vClr};">{vsAvg > 0 ? '▲' : vsAvg < 0 ? '▼' : '→'}{Math.abs(vsAvg).toFixed(0)}%</span>
+													{:else}
+														<span class="w-14 shrink-0"></span>
+													{/if}
+												</div>
+											{/each}
 										</div>
 										<div class="px-3 py-1 text-[8px] font-mono" style="background: #f6f4e9; color: #9d9d91; border-top: 1px solid #ebe8dd;">{m.tc}</div>
 									</div>
@@ -727,6 +843,8 @@
 											<thead><tr style="background: #ebe8dd;">
 												<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SECTOR</th>
 												<th class="py-1.5 px-2 text-center font-black">SITES</th>
+												<th class="py-1.5 px-2 text-center font-black">GENS</th>
+												<th class="py-1.5 px-2 text-center font-black">RUNNING</th>
 												<th class="py-1.5 px-2 text-center font-black">BUFFER</th>
 												<th class="py-1.5 px-2 text-center font-black">BURN</th>
 												<th class="py-1.5 px-2 text-center font-black">COST</th>
@@ -738,9 +856,12 @@
 											<tbody>
 												{#each sectorSnap as ss, si}
 													{@const bfc = ss.buffer >= 7 ? '#007518' : ss.buffer >= 3 ? '#ff9d00' : '#be2d06'}
+													{@const runPct = ss.total_gens > 0 ? Math.round(ss.running_gens / ss.total_gens * 100) : 0}
 													<tr style="background: {si % 2 ? '#f6f4e9' : 'white'}; border-bottom: 1px solid #ebe8dd;">
 														<td class="py-1.5 px-2 font-bold">{ss.sector}</td>
 														<td class="py-1.5 px-2 text-center">{ss.sites}</td>
+														<td class="py-1.5 px-2 text-center font-mono">{ss.total_gens || 0}</td>
+														<td class="py-1.5 px-2 text-center font-bold" style="color: {runPct >= 80 ? '#007518' : runPct >= 50 ? '#ff9d00' : '#be2d06'};">{ss.running_gens || 0}/{ss.total_gens || 0} <span class="text-[8px] font-normal">({runPct}%)</span></td>
 														<td class="py-1.5 px-2 text-center font-bold" style="color: {bfc};">{ss.buffer}d</td>
 														<td class="py-1.5 px-2 text-center font-mono">{fmtV(ss.burn)}</td>
 														<td class="py-1.5 px-2 text-center font-mono">{fmtV(ss.cost)}</td>
@@ -755,6 +876,52 @@
 									</div>
 								</div>
 							{/if}
+
+
+							<!-- Formula Reference -->
+							<div style="border-top: 2px solid #383832;">
+								<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+									<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+									<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+								</div>
+								<div class="overflow-x-auto">
+									<table class="w-full text-[10px]" style="border-collapse: collapse;">
+										<thead>
+											<tr style="background: #ebe8dd;">
+												<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 130px;">METRIC</th>
+												<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+												<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">PER SITE</th>
+												<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each [
+												{ m: 'BUFFER DAYS', f: 'last_day_tank ÷ 3d_avg_daily_fuel', ps: '—', src: 'daily_site_summary', clr: '#007518' },
+												{ m: 'GEN RUN HR', f: 'SUM(gen_run_hr)', ps: 'total ÷ sites', src: 'daily_site_summary', clr: '#ff9d00' },
+												{ m: 'FUEL USED', f: 'SUM(daily_used)', ps: 'total ÷ sites', src: 'daily_site_summary', clr: '#e85d04' },
+												{ m: 'TANK BAL', f: 'SUM(spare_tank) on last day', ps: 'total ÷ sites', src: 'daily_site_summary', clr: '#007518' },
+												{ m: 'BLACKOUT HR', f: 'SUM(blackout_hr)', ps: 'total ÷ sites', src: 'daily_site_summary', clr: '#be2d06' },
+												{ m: 'BURN / DAY', f: 'SUM(daily_used) ÷ days', ps: 'L/HR = fuel ÷ gen_hr', src: 'daily_site_summary', clr: '#9d4867' },
+												{ m: 'COST (MMK)', f: 'fuel_used × latest_purchase_price', ps: 'total ÷ sites', src: 'fuel_purchases', clr: '#6d597a' },
+												{ m: 'SALES (MMK)', f: 'SUM(sales_amt)', ps: 'total ÷ sites', src: 'daily_sales', clr: '#006f7c' },
+												{ m: 'DIESEL %', f: '(cost ÷ sales) × 100', ps: '—', src: 'derived', clr: '#be2d06' },
+												{ m: 'MARGIN %', f: '(margin ÷ sales) × 100', ps: '—', src: 'daily_sales', clr: '#007518' },
+												{ m: 'EFFICIENCY', f: 'SUM(fuel) ÷ SUM(gen_hr)', ps: '—', src: 'derived', clr: '#65655e' },
+												{ m: '3D AVG', f: 'prior 3 days daily avg (not sum)', ps: 'avg of daily per-site', src: '/period-kpis', clr: '#65655e' },
+												{ m: '1D vs 3D', f: '(1D − 3D) ÷ 3D × 100%', ps: '▲ up ▼ down → flat', src: 'derived', clr: '#65655e' },
+											] as r, i}
+												<tr style="background: {i % 2 ? '#f6f4e9' : 'white'}; border-bottom: 1px solid #ebe8dd;">
+													<td class="py-1.5 px-3 font-bold" style="color: {r.clr};">{r.m}</td>
+													<td class="py-1.5 px-3 font-mono" style="color: #383832;">{r.f}</td>
+													<td class="py-1.5 px-3 font-mono" style="color: #65655e;">{r.ps}</td>
+													<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">{r.src}</code></td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							</div>
+
 						</div>
 					{/if}
 				</div>
@@ -782,42 +949,10 @@
 						{/each}
 					</div>
 
-					<div class="space-y-6">
+					<div class="space-y-6 section-animate">
 						<TrendCharts dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
 						<RollingCharts dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
 
-						<!-- #94 Monthly Summary -->
-						{#if monthlySummary.length > 0}
-							<div>
-								<div id="ch-monthly" class="scroll-mt-36"></div>
-								<div class="flex items-center gap-3 px-4 py-3" style="background: #383832; color: #feffd6;">
-									<span class="material-symbols-outlined text-xl" style="color: #00fc40;">calendar_month</span>
-									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 7: MONTHLY SUMMARY</div>
-										<div class="text-[10px] opacity-75">Month-by-month performance grades and trends</div>
-									</div>
-								</div>
-								<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mt-3">
-									{#each monthlySummary as m}
-										{@const gradeColors: Record<string, string> = { A: '#007518', B: '#006f7c', C: '#ff9d00', D: '#f95630', F: '#be2d06' }}
-										{@const gc = gradeColors[m.grade] || '#65655e'}
-										<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: white;">
-											<div class="px-3 py-2 font-black text-sm" style="background: #383832; color: #feffd6;">{m.month}</div>
-											<div class="p-3 text-[11px] font-mono space-y-1.5" style="color: #383832;">
-												<div class="flex justify-between"><span style="color: #65655e;">Total Fuel</span><span class="font-bold">{m.fuel?.toLocaleString()} L</span></div>
-												<div class="flex justify-between"><span style="color: #65655e;">Burn/Day</span><span class="font-bold">{m.burn_per_day?.toLocaleString()} L</span></div>
-												<div class="flex justify-between"><span style="color: #65655e;">Blackout</span><span class="font-bold">{m.blackout_hr} hr</span></div>
-												<div class="flex justify-between"><span style="color: #65655e;">Buffer</span><span class="font-bold" style="color: {gc};">{m.buffer} days</span></div>
-												<div class="flex justify-between"><span style="color: #65655e;">Days</span><span class="font-bold">{m.days}</span></div>
-											</div>
-											<div class="text-center py-2" style="border-top: 1px solid #ebe8dd;">
-												<span class="px-4 py-1 text-sm font-black" style="background: {gc}; color: white;">GRADE: {m.grade}</span>
-											</div>
-										</div>
-									{/each}
-								</div>
-							</div>
-						{/if}
 
 						<!-- #77 Blackout Calendar -->
 						{#if blackoutCalendar.length > 0}
@@ -867,12 +1002,8 @@
 				{:else if dashSection === 'sector'}
 					<!-- Quick Navigation -->
 					{@const whereChapters = [
-						{ id: 'where-big', icon: 'apartment', label: '1. BIG PICTURE' },
-						{ id: 'where-heatmap', icon: 'map', label: '2. HEATMAP' },
-						{ id: 'where-segments', icon: 'pie_chart', label: '3. SEGMENTS' },
-						{ id: 'where-sites', icon: 'pin_drop', label: '4. ALL SITES' },
-						{ id: 'where-rank', icon: 'leaderboard', label: '5. RANKINGS' },
-						{ id: 'where-lng', icon: 'bolt', label: '6. REG vs LNG' },
+						{ id: 'where-sites', icon: 'pin_drop', label: '1. ALL SITES' },
+						{ id: 'where-lng', icon: 'bolt', label: '2. REG vs LNG' },
 					]}
 					<div class="flex flex-wrap gap-1 mb-4 p-2 sticky top-28 z-20" style="background: #f6f4e9; border: 2px solid #383832;">
 						<span class="text-[9px] font-black uppercase self-center mr-2" style="color: #65655e;">JUMP TO:</span>
@@ -886,96 +1017,18 @@
 						{/each}
 					</div>
 
-					<div class="space-y-6">
-						<!-- CH1: THE BIG PICTURE -->
-						<div id="where-big" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3">
-									<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">apartment</span>
-									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 1: THE BIG PICTURE</div>
-										<div class="text-[10px] opacity-75">Group and company level summary — how does the whole business look?</div>
-									</div>
-								</div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">
-									? Which company uses the most fuel? Who has the most critical sites?
-								</div>
-							</div>
-						</div>
-
-						<!-- CH2: SECTOR HEATMAP -->
-						<div id="where-heatmap" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3">
-									<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">map</span>
-									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 2: SECTOR HEATMAP</div>
-										<div class="text-[10px] opacity-75">Color-coded overview — green means healthy, red means danger.</div>
-									</div>
-								</div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">
-									? Which sector has the best buffer? Worst blackout? Highest diesel cost?
-								</div>
-							</div>
-						</div>
-						<SectorHeatmap dateFrom={dateFrom} dateTo={dateTo} />
-
-						<!-- CH3: SEGMENTS + CH4: ALL SITES (inside SectorSites component) -->
-						<div id="where-segments" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3">
-									<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">pie_chart</span>
-									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 3: SEGMENT DEEP DIVE</div>
-										<div class="text-[10px] opacity-75">Within each sector — which business segment performs best/worst?</div>
-									</div>
-								</div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">
-									? Is Ocean better than City Mart? Which segment has highest diesel %?
-								</div>
-							</div>
-						</div>
-
-						<div id="where-sites" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3">
-									<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">pin_drop</span>
-									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 4: EVERY SITE</div>
-										<div class="text-[10px] opacity-75">Site-by-site data — search, filter, and find specific locations.</div>
-									</div>
-								</div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">
-									? Which specific site needs fuel? Who has the worst efficiency?
-								</div>
-							</div>
-						</div>
+					<div class="space-y-6 section-animate">
+						<!-- CH1: ALL SITES (summary + site table) -->
+						<div id="where-sites" class="scroll-mt-36"></div>
 						<SectorSites sector={sectorApiParam()} company={activeCompany} sites={selectedSites} />
 
-						<!-- CH5: RANKINGS -->
-						<div id="where-rank" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3">
-									<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">leaderboard</span>
-									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 5: TOP PERFORMERS & WORST OFFENDERS</div>
-										<div class="text-[10px] opacity-75">Top 15 sites by diesel cost and diesel % of sales — who needs attention most?</div>
-									</div>
-								</div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">
-									? Which sites spend the most on diesel? Where is diesel eating into revenue?
-								</div>
-							</div>
-						</div>
-						<Rankings dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
-
-						<!-- CH6: REGULAR vs LNG -->
+						<!-- CH3: REGULAR vs LNG -->
 						<div id="where-lng" class="scroll-mt-36">
 							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
 								<div class="flex items-center gap-3">
 									<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">bolt</span>
 									<div>
-										<div class="font-black uppercase text-sm">CHAPTER 6: REGULAR vs LNG</div>
+										<div class="font-black uppercase text-sm">CHAPTER 3: REGULAR vs LNG</div>
 										<div class="text-[10px] opacity-75">Comparing diesel generators vs LNG — which fuel type is more efficient?</div>
 									</div>
 								</div>
@@ -992,8 +1045,12 @@
 						{ id: 'ops-modes', icon: 'toggle_on', label: '1. MODES' },
 						{ id: 'ops-delivery', icon: 'local_shipping', label: '2. DELIVERY' },
 						{ id: 'ops-fleet', icon: 'build', label: '3. FLEET' },
-						{ id: 'ops-patterns', icon: 'date_range', label: '4. PATTERNS' },
-						{ id: 'ops-scores', icon: 'assessment', label: '5. SCORES' },
+						{ id: 'ops-transfers', icon: 'swap_horiz', label: '4. TRANSFERS' },
+						{ id: 'ops-loadopt', icon: 'speed', label: '5. OPTIMIZATION' },
+						{ id: 'ops-scores', icon: 'shield', label: '6. SCORES' },
+						{ id: 'ops-alerts', icon: 'notifications_active', label: '7. ALERTS' },
+						{ id: 'ops-patterns', icon: 'date_range', label: '8. PATTERNS' },
+						{ id: 'ops-waste', icon: 'warning', label: '9. WASTE' },
 					]}
 					<div class="flex flex-wrap gap-1 mb-4 p-2 sticky top-28 z-20" style="background: #f6f4e9; border: 2px solid #383832;">
 						<span class="text-[9px] font-black uppercase self-center mr-2" style="color: #65655e;">JUMP TO:</span>
@@ -1005,197 +1062,56 @@
 							</button>
 						{/each}
 					</div>
-					<div class="space-y-6">
-						<div id="ops-modes" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">toggle_on</span><div><div class="font-black uppercase text-sm">CHAPTER 1: OPERATING MODES</div><div class="text-[10px] opacity-75">Should each site stay OPEN, MONITOR, REDUCE hours, or CLOSE?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites should reduce generator hours? Who should close?</div>
+					<div class="space-y-6 section-animate">
+						<!-- Operations Situation Report -->
+						{#if periodKpis.last_day}
+							{@const ld = periodKpis.last_day}
+							{@const snap = periodKpis.sector_snapshot || []}
+							{@const totalGens = snap.reduce((s: number, ss: any) => s + (ss.total_gens || 0), 0)}
+							{@const runningGens = snap.reduce((s: number, ss: any) => s + (ss.running_gens || 0), 0)}
+							{@const runPct = totalGens > 0 ? Math.round(runningGens / totalGens * 100) : 0}
+							{@const critSectors = snap.filter((ss: any) => ss.crit > 0)}
+							{@const fmtOps = (v: number) => { if (v >= 1e9) return (v/1e9).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'B'; if (v >= 1e6) return (v/1e6).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'M'; if (v >= 1e3) return (v/1e3).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'K'; return v.toLocaleString(); }}
+							<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: white;">
+								<div class="px-4 py-2" style="background: #383832; color: #feffd6;">
+									<span class="text-[11px] font-black uppercase">OPERATIONS SITUATION REPORT</span>
+									<span class="text-[9px] opacity-75 ml-2">{ld.date}</span>
+								</div>
+								<div class="px-4 py-3 text-xs leading-relaxed" style="color: #383832;">
+									<p class="mb-1.5">On {ld.date}, <strong>{ld.sites} sites</strong> reported across {snap.length} sectors with <strong>{totalGens} generators</strong> ({runningGens} running, <span style="color: {runPct >= 80 ? '#007518' : runPct >= 50 ? '#ff9d00' : '#be2d06'}; font-weight: bold;">{runPct}% utilization</span>).</p>
+									<p class="mb-1.5">Generators ran <strong>{fmtOps(ld.total_gen_hr || 0)} hours</strong> total, consuming <strong>{fmtOps(ld.total_fuel || 0)}L</strong> of diesel at <strong>{ld.efficiency || 0} L/Hr</strong> efficiency, costing <strong>{fmtOps(ld.cost || 0)} MMK</strong>.</p>
+									{#if ld.crit > 0}
+										<p class="mb-1.5" style="color: #be2d06;"><strong>{ld.crit} sites are CRITICAL</strong> (&lt;3 days fuel) and need immediate delivery of <strong>{fmtOps(ld.needed || 0)}L</strong>.</p>
+									{/if}
+									{#if critSectors.length > 0}
+										<p class="mb-1.5">Sectors with critical sites: {#each critSectors as cs, ci}<strong style="color: #be2d06;">{cs.sector} ({cs.crit})</strong>{ci < critSectors.length - 1 ? ', ' : ''}{/each}.</p>
+									{/if}
+									{#if (ld.sites_not_reported || 0) > 0}
+										<p class="mb-1.5" style="color: #ff9d00;">{ld.sites_not_reported} sites did not report — data may be incomplete.</p>
+									{/if}
+									<p>Fleet buffer stands at <strong style="color: {ld.buffer >= 7 ? '#007518' : ld.buffer >= 3 ? '#ff9d00' : '#be2d06'};">{ld.buffer} days</strong> — {ld.buffer >= 7 ? 'fuel supply is healthy.' : ld.buffer >= 3 ? 'fuel supply needs monitoring.' : 'fuel supply is critical, prioritize deliveries.'}</p>
+								</div>
 							</div>
-						</div>
-						<div id="ops-delivery" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">local_shipping</span><div><div class="font-black uppercase text-sm">CHAPTER 2: FUEL DELIVERY QUEUE</div><div class="text-[10px] opacity-75">Priority-ordered list of sites that need fuel delivery.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Who needs fuel first? How many liters? By when?</div>
-							</div>
-						</div>
+						{/if}
+
 						<OperatingModes sector={sectorApiParam()} company={activeCompany} />
-
-						<div id="ops-fleet" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">build</span><div><div class="font-black uppercase text-sm">CHAPTER 3: FLEET & MAINTENANCE</div><div class="text-[10px] opacity-75">Generator health, fuel transfers, load balancing, and anomaly detection.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which generators need maintenance? Can we move fuel between sites?</div>
-							</div>
-						</div>
 						<OperationsTables sector={sectorApiParam()} />
-
-						<div id="ops-patterns" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">date_range</span><div><div class="font-black uppercase text-sm">CHAPTER 4: WEEKLY PATTERNS</div><div class="text-[10px] opacity-75">Week-over-week comparison and day-of-week patterns.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Is this week better than last? Which day burns the most fuel?</div>
-							</div>
-						</div>
-						<div id="ops-scores" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">assessment</span><div><div class="font-black uppercase text-sm">CHAPTER 5: PERFORMANCE SCORES</div><div class="text-[10px] opacity-75">Sector comparison, generator utilization, and waste/theft detection.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sector scores best? Any generators running suspiciously high?</div>
-							</div>
-						</div>
 						<GroupExtras dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
 					</div>
 
 				<!-- ═══ TAB 05: WHAT'S AT RISK ═══ -->
 				{:else if dashSection === 'risk'}
-					{@const riskNav = [
-						{ id: 'risk-grades', icon: 'shield', label: '1. BCP GRADES' },
-						{ id: 'risk-actions', icon: 'checklist', label: '2. ACTIONS' },
-						{ id: 'risk-alerts', icon: 'notifications_active', label: '3. ALERTS' },
-						{ id: 'risk-stockout', icon: 'hourglass_bottom', label: '4. STOCKOUT' },
-					]}
-					<div class="flex flex-wrap gap-1 mb-4 p-2 sticky top-28 z-20" style="background: #f6f4e9; border: 2px solid #383832;">
-						<span class="text-[9px] font-black uppercase self-center mr-2" style="color: #65655e;">JUMP TO:</span>
-						{#each riskNav as ch}
-							<button onclick={() => document.getElementById(ch.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-								class="px-3 py-1.5 text-[9px] font-black uppercase flex items-center gap-1 transition-colors hover:bg-[#383832] hover:text-[#feffd6]"
-								style="background: white; color: #383832; border: 1px solid #383832;">
-								<span class="material-symbols-outlined text-xs">{ch.icon}</span> {ch.label}
-							</button>
-						{/each}
-					</div>
-					<div class="space-y-6">
-						<div id="risk-grades" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">shield</span><div><div class="font-black uppercase text-sm">CHAPTER 1: BCP RISK GRADES</div><div class="text-[10px] opacity-75">A-F grades based on fuel coverage, generator capacity, and resilience.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? What grade does each site get? How many are failing?</div>
-							</div>
-						</div>
-						<div id="risk-actions" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">checklist</span><div><div class="font-black uppercase text-sm">CHAPTER 2: RECOMMENDED ACTIONS</div><div class="text-[10px] opacity-75">Rule-based recommendations — what should we do right now?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? What's the most urgent action? Which sites need immediate help?</div>
-							</div>
-						</div>
-						<div id="risk-alerts" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">notifications_active</span><div><div class="font-black uppercase text-sm">CHAPTER 3: ACTIVE ALERTS</div><div class="text-[10px] opacity-75">Live alert feed — critical, warning, and info notifications.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? How many critical alerts? Which sites triggered them?</div>
-							</div>
-						</div>
-						<div id="risk-stockout" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">hourglass_bottom</span><div><div class="font-black uppercase text-sm">CHAPTER 4: STOCKOUT FORECAST</div><div class="text-[10px] opacity-75">Which sites will run out of fuel in the next 7 days?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Who will run dry first? What date? How confident are we?</div>
-							</div>
-						</div>
-						<RiskPanel />
-					</div>
+					<RiskPanel />
 
 				<!-- ═══ TAB 06: FUEL & COST ═══ -->
 				{:else if dashSection === 'fuel'}
-					{@const fuelNav = [
-						{ id: 'fuel-buy', icon: 'shopping_cart', label: '1. BUY SIGNAL' },
-						{ id: 'fuel-budget', icon: 'account_balance', label: '2. BUDGET' },
-						{ id: 'fuel-price', icon: 'show_chart', label: '3. PRICES' },
-						{ id: 'fuel-analysis', icon: 'analytics', label: '4. ANALYSIS' },
-						{ id: 'fuel-ocean', icon: 'waves', label: '5. OCEAN' },
-					]}
-					<div class="flex flex-wrap gap-1 mb-4 p-2 sticky top-28 z-20" style="background: #f6f4e9; border: 2px solid #383832;">
-						<span class="text-[9px] font-black uppercase self-center mr-2" style="color: #65655e;">JUMP TO:</span>
-						{#each fuelNav as ch}
-							<button onclick={() => document.getElementById(ch.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-								class="px-3 py-1.5 text-[9px] font-black uppercase flex items-center gap-1 transition-colors hover:bg-[#383832] hover:text-[#feffd6]"
-								style="background: white; color: #383832; border: 1px solid #383832;">
-								<span class="material-symbols-outlined text-xs">{ch.icon}</span> {ch.label}
-							</button>
-						{/each}
-					</div>
-					<div class="space-y-6">
-						<div id="fuel-buy" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">shopping_cart</span><div><div class="font-black uppercase text-sm">CHAPTER 1: SHOULD WE BUY FUEL?</div><div class="text-[10px] opacity-75">Supplier signals — is now a good time to purchase?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which supplier has the best price? BUY now or WAIT?</div>
-							</div>
-						</div>
-						<div id="fuel-budget" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">account_balance</span><div><div class="font-black uppercase text-sm">CHAPTER 2: WEEKLY BUDGET</div><div class="text-[10px] opacity-75">How much fuel do we need this week and what will it cost?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Total liters needed? Total cost? Per sector breakdown?</div>
-							</div>
-						</div>
-						<div id="fuel-price" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">show_chart</span><div><div class="font-black uppercase text-sm">CHAPTER 3: PRICE TRENDS & FORECAST</div><div class="text-[10px] opacity-75">Are fuel prices going up or down? ML-powered 7-day forecast.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Price trend? Which supplier is cheapest? What's the 7-day forecast?</div>
-							</div>
-						</div>
-						<div id="fuel-analysis" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">analytics</span><div><div class="font-black uppercase text-sm">CHAPTER 4: COST ANALYSIS</div><div class="text-[10px] opacity-75">Break-even analysis, site mapping status, and fuel wastage report.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites are above break-even? Where is fuel being wasted?</div>
-							</div>
-						</div>
-						<div id="fuel-ocean" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">waves</span><div><div class="font-black uppercase text-sm">CHAPTER 5: OCEAN COST ALLOCATION</div><div class="text-[10px] opacity-75">Ocean store diesel costs split by center contribution percentage.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? How much does Ocean really pay? What's the shopping center split?</div>
-							</div>
-						</div>
-						<FuelIntel />
-					</div>
+					<FuelIntel />
 
 				<!-- ═══ TAB 07: WHAT'S NEXT ═══ -->
 				{:else if dashSection === 'predictions'}
-					{@const predNav = [
-						{ id: 'pred-forecast', icon: 'query_stats', label: '1. FORECASTS' },
-						{ id: 'pred-risk', icon: 'warning', label: '2. RISK' },
-						{ id: 'pred-actions', icon: 'assignment', label: '3. ACTIONS' },
-						{ id: 'pred-whatif', icon: 'science', label: '4. WHAT-IF' },
-						{ id: 'pred-transfers', icon: 'swap_horiz', label: '5. TRANSFERS' },
-					]}
-					<div class="flex flex-wrap gap-1 mb-4 p-2 sticky top-28 z-20" style="background: #f6f4e9; border: 2px solid #383832;">
-						<span class="text-[9px] font-black uppercase self-center mr-2" style="color: #65655e;">JUMP TO:</span>
-						{#each predNav as ch}
-							<button onclick={() => document.getElementById(ch.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-								class="px-3 py-1.5 text-[9px] font-black uppercase flex items-center gap-1 transition-colors hover:bg-[#383832] hover:text-[#feffd6]"
-								style="background: white; color: #383832; border: 1px solid #383832;">
-								<span class="material-symbols-outlined text-xs">{ch.icon}</span> {ch.label}
-							</button>
-						{/each}
-					</div>
-					<div class="space-y-6">
-						<div id="pred-forecast" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">query_stats</span><div><div class="font-black uppercase text-sm">CHAPTER 1: 7-DAY FORECASTS</div><div class="text-[10px] opacity-75">ML-powered predictions — where are fuel, buffer, cost, and blackout headed?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Will buffer improve or drop? Will costs rise? Is a blackout spike coming?</div>
-							</div>
-						</div>
-						<div id="pred-risk" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">warning</span><div><div class="font-black uppercase text-sm">CHAPTER 2: RISK PREDICTIONS</div><div class="text-[10px] opacity-75">At-risk generators, operating mode predictions, waste/theft detection.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which generators might fail? Which sites should close? Any theft suspected?</div>
-							</div>
-						</div>
-						<div id="pred-actions" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">assignment</span><div><div class="font-black uppercase text-sm">CHAPTER 3: ACTION PLAN</div><div class="text-[10px] opacity-75">Delivery schedule, sites to close, weekly budget forecast.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? What fuel to deliver where? Which sites to shut down? Weekly budget?</div>
-							</div>
-						</div>
+					<div class="space-y-6 section-animate">
 						<Predictions sector={sectorApiParam()} dateFrom={dateFrom} dateTo={dateTo} />
-
-						<div id="pred-whatif" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">science</span><div><div class="font-black uppercase text-sm">CHAPTER 4: WHAT-IF SIMULATOR</div><div class="text-[10px] opacity-75">What happens if fuel price changes? If consumption drops? Scenario planning.</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? What if price rises 20%? What if we cut generator hours by 30%?</div>
-							</div>
-						</div>
 						<WhatIf />
-
-						<div id="pred-transfers" class="scroll-mt-36">
-							<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
-								<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">swap_horiz</span><div><div class="font-black uppercase text-sm">CHAPTER 5: FUEL TRANSFERS</div><div class="text-[10px] opacity-75">Can we move fuel from surplus sites to deficit sites?</div></div></div>
-								<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites have excess fuel? Who can share? How many liters to transfer?</div>
-							</div>
-						</div>
 						{#if transferData.length > 0}
 							<div style="border: 2px solid #383832; background: white;">
 								<div class="px-4 py-2 flex justify-between items-center" style="background: #383832; color: #feffd6;">
@@ -1232,8 +1148,6 @@
 							</div>
 						{/if}
 					</div>
-				{:else if dashSection === 'ai'}
-					<AiInsights kpiData={k} heatmapData={heatmapRows} />
 				{/if}
 			</div>
 		</div>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api, downloadExcel } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 	import { lineChart, hbarChart, dualAxisChart } from '$lib/charts';
 
 	let { sector = '', dateFrom = '', dateTo = '' }: { sector?: string; dateFrom?: string; dateTo?: string } = $props();
@@ -48,14 +49,16 @@
 	}
 </script>
 
-{#if loading}
-	<p class="text-sm py-4 text-center" style="color: #65655e;">Loading predictions...</p>
-{:else}
-	<h2 class="text-lg font-black uppercase mt-6 mb-3 px-3 py-1" style="background: #383832; color: #feffd6;">PREDICTIONS & FORECASTS</h2>
+<AiInsightPanel type="kpi" data={{ tab: 'predictions', summary: 'Buffer depletion forecast, fuel price prediction (Ridge regression), 7-day projections, purchase volume analysis' }} title="AI INSIGHT — PREDICTIONS & FORECAST" />
 
-	<!-- Stockout Forecast -->
+{#if !loading || predictions}
+
+	<!-- CHAPTER 1: BUFFER DEPLETION -->
+	<div id="pred-forecast" class="scroll-mt-36 px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
+		<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">query_stats</span><div><div class="font-black uppercase text-sm">CHAPTER 1: BUFFER DEPLETION TIMELINE</div><div class="text-[10px] opacity-75">Which sites will run out of fuel? ML-powered stockout projections.</div></div></div>
+		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Who will run dry first? How many days left?</div>
+	</div>
 	{#if predictions?.stockout?.length > 0}
-		<h3 class="text-sm font-black uppercase mb-2 px-3 py-1" style="background: #383832; color: #feffd6;">BUFFER DEPLETION TIMELINE</h3>
 		{@const sorted = predictions.stockout.sort((a: any, b: any) => (a.days_until_stockout || 99) - (b.days_until_stockout || 99)).slice(0, 15)}
 		<Chart option={hbarChart(
 			sorted.map((r: any) => r.site_id),
@@ -66,9 +69,12 @@
 		<p class="text-sm mb-4" style="color: #383832;">No sites projected to run out within 7 days.</p>
 	{/if}
 
-	<!-- Fuel Price Forecast -->
+	<!-- CHAPTER 2: FUEL PRICE FORECAST -->
+	<div id="pred-price" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+		<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">show_chart</span><div><div class="font-black uppercase text-sm">CHAPTER 2: FUEL PRICE FORECAST</div><div class="text-[10px] opacity-75">ML-powered 7-day fuel price prediction — will prices go up or down?</div></div></div>
+		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? What's the price trend? Should we buy now or wait?</div>
+	</div>
 	{#if fuelFc && fuelFc.history?.length > 0}
-		<h3 class="text-sm font-black uppercase mt-4 mb-2 px-3 py-1" style="background: #383832; color: #feffd6;">FUEL PRICE FORECAST (7-DAY)</h3>
 		{@const hist = fuelFc.history}
 		{@const fc = fuelFc.forecast || []}
 		{@const allDates = [...hist.map((r: any) => r.date), ...fc.map((r: any) => r.date)]}
@@ -93,7 +99,11 @@
 		{@const hasForecasts = charts.some(c => predictions[c.key]?.length > 0)}
 
 		{#if hasForecasts}
-			<h3 class="text-sm font-black uppercase mt-6 mb-2 px-3 py-1" style="background: #383832; color: #feffd6;">7-DAY FORECASTS</h3>
+			<!-- CHAPTER 3: 7-DAY FORECASTS -->
+			<div id="pred-7day" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+				<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">trending_up</span><div><div class="font-black uppercase text-sm">CHAPTER 3: 7-DAY FUEL & BUFFER FORECASTS</div><div class="text-[10px] opacity-75">Where are fuel consumption, buffer, and costs headed?</div></div></div>
+				<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Will buffer improve or drop? Will costs rise?</div>
+			</div>
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 				{#each charts as c}
 					{@const opt = forecastChart(predictions[c.key], c.title, c.color)}
@@ -106,7 +116,10 @@
 
 		<!-- Purchase Volume by Supplier -->
 		{#if predictions.purchase_volume?.length > 0}
-			<h3 class="text-sm font-black uppercase mt-6 mb-2 px-3 py-1" style="background: #383832; color: #feffd6;">PURCHASE VOLUME BY SUPPLIER</h3>
+			<!-- CHAPTER 4: PURCHASE VOLUME -->
+			<div class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+				<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">local_gas_station</span><div><div class="font-black uppercase text-sm">CHAPTER 4: PURCHASE VOLUME BY SUPPLIER</div><div class="text-[10px] opacity-75">How much fuel are we buying from each supplier?</div></div></div>
+			</div>
 			<Chart option={hbarChart(
 				predictions.purchase_volume.map((r: any) => `${r.supplier} (avg ${Math.round(r.avg_price || 0)} MMK/L)`),
 				predictions.purchase_volume.map((r: any) => Math.round(r.total_liters || 0)),
@@ -323,3 +336,28 @@
 		</div>
 	{/if}
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead><tr style="background: #ebe8dd;">
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+				<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+			</tr></thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">BUFFER DEPLETION</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">current_tank &divide; smoothed_daily_consumption</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">buffer_predictor</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #006f7c;">FUEL PRICE FORECAST</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">Ridge regression on lag features (lag_1, lag_3, rolling_mean_7)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fuel_price_forecast</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #e85d04;">7-DAY FUEL FORECAST</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">exponential smoothing of daily fuel consumption</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">buffer_predictor</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #007518;">7-DAY BUFFER FORECAST</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">projected tank &divide; projected consumption</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #383832;">PURCHASE VOLUME</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">SUM(liters) per supplier from fuel_purchases</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fuel_purchases</code></td></tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;"><td class="py-1.5 px-3 font-bold" style="color: #be2d06;">STOCKOUT DATE</td><td class="py-1.5 px-3 font-mono" style="color: #383832;">today + (tank &divide; daily_consumption)</td><td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td></tr>
+			</tbody>
+		</table>
+	</div>
+</div>

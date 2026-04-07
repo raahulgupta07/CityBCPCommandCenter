@@ -253,9 +253,34 @@
 						</div>
 						<div>
 							<div class="inline-block px-2 py-0.5 text-[10px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">SECTOR_ACCESS</div>
-							<select bind:value={newUser.sectors} multiple class="w-full px-3 py-2 text-sm font-bold h-[38px]" style="background: white; border: 2px solid #383832; font-family: 'Space Grotesk', sans-serif;">
-								{#each SECTORS as s}<option value={s}>{s}</option>{/each}
-							</select>
+							<div class="px-3 py-2" style="background: white; border: 2px solid #383832;">
+								<label class="flex items-center gap-2 cursor-pointer mb-1.5 pb-1.5" style="border-bottom: 1px solid #ebe8dd;">
+									<input type="checkbox"
+										checked={newUser.sectors.length === 0 || newUser.sectors.length === SECTORS.length}
+										onchange={() => { newUser.sectors = (newUser.sectors.length === 0 || newUser.sectors.length === SECTORS.length) ? [] : [...SECTORS]; }}
+										class="w-4 h-4" style="accent-color: #007518;" />
+									<span class="text-sm font-black uppercase" style="color: #383832;">ALL SECTORS</span>
+									<span class="text-[9px] ml-auto" style="color: #65655e;">{newUser.sectors.length === 0 || newUser.sectors.length === SECTORS.length ? 'Full access' : newUser.sectors.length + ' selected'}</span>
+								</label>
+								<div class="grid grid-cols-2 gap-1">
+									{#each SECTORS as s}
+										<label class="flex items-center gap-2 cursor-pointer px-2 py-1 text-xs font-bold uppercase transition-colors"
+											style="background: {newUser.sectors.includes(s) ? '#007518' : 'transparent'}; color: {newUser.sectors.includes(s) ? 'white' : '#383832'}; border-radius: 4px;">
+											<input type="checkbox"
+												checked={newUser.sectors.length === 0 || newUser.sectors.includes(s)}
+												onchange={() => {
+													if (newUser.sectors.includes(s)) {
+														newUser.sectors = newUser.sectors.filter((x: string) => x !== s);
+													} else {
+														newUser.sectors = [...newUser.sectors, s];
+													}
+												}}
+												class="w-3 h-3" style="accent-color: #007518;" />
+											{s}
+										</label>
+									{/each}
+								</div>
+							</div>
 						</div>
 					</div>
 					<button onclick={createUser} class="mt-4 w-full py-3 font-black uppercase transition-all active:translate-x-[2px] active:translate-y-[2px]" style="background: #00fc40; border: 2px solid #383832; color: #383832;">
@@ -285,11 +310,22 @@
 								</div>
 								<div class="p-3" style="border: 2px solid #383832; background: white;">
 									<div class="text-[9px] font-black uppercase opacity-60 mb-2">CHANGE_ROLE</div>
-									<select bind:value={changeRole} class="w-full px-2 py-1 text-xs font-bold uppercase mb-2" style="border: 2px solid #383832; font-family: 'Space Grotesk', sans-serif;">
-										<option value="admin">OPERATOR</option>
-										<option value="user">VIEWER</option>
-									</select>
-									<button onclick={() => updateRole(manageUserId!)} class="w-full py-1 text-[10px] font-black uppercase active:translate-x-[1px] active:translate-y-[1px]" style="border: 2px solid #383832;">UPDATE</button>
+									<div class="flex gap-1 mb-2">
+										<button onclick={() => changeRole = 'admin'}
+											class="flex-1 py-2 text-[10px] font-black uppercase"
+											style="border: 2px solid #383832; background: {changeRole === 'admin' ? '#007518' : 'white'}; color: {changeRole === 'admin' ? 'white' : '#383832'};">
+											OPERATOR
+										</button>
+										<button onclick={() => changeRole = 'user'}
+											class="flex-1 py-2 text-[10px] font-black uppercase"
+											style="border: 2px solid #383832; background: {changeRole === 'user' ? '#ff9d00' : 'white'}; color: {changeRole === 'user' ? 'white' : '#383832'};">
+											VIEWER
+										</button>
+									</div>
+									<div class="text-[8px] mb-2" style="color: #65655e;">
+										{changeRole === 'admin' ? 'Full access: upload, AI, all features' : 'Read-only: view dashboard, no uploads'}
+									</div>
+									<button onclick={() => updateRole(manageUserId!)} class="w-full py-1.5 text-[10px] font-black uppercase active:translate-x-[1px] active:translate-y-[1px]" style="border: 2px solid #383832; background: #00fc40; color: #383832;">APPLY ROLE</button>
 								</div>
 								<div class="p-3" style="border: 2px solid #383832; background: white;">
 									<div class="text-[9px] font-black uppercase opacity-60 mb-2">RESET_PASSKEY</div>

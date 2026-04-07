@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from utils.database import get_db
 from backend.routers.auth import get_current_user
-from backend.routers.data import _dsql
+from backend.routers.data import _dsql, _sector_prices_latest
 from config.settings import HEATMAP_THRESHOLDS
 
 router = APIRouter()
@@ -55,16 +55,24 @@ def sites_summary(
 ):
     with get_db() as conn:
         dsql, dp = _dsql("dss.date", date_from, date_to)
+
+        # Find latest date in range for tank (always use last day's SUM)
+        dp_ld = list(dp)
+        ld_q = f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id=s.site_id WHERE 1=1{dsql}"
+        if sector:
+            ld_q += " AND s.sector_id = ?"
+            dp_ld.append(sector)
+        latest_row = conn.execute(ld_q, dp_ld).fetchone()
+        latest_date = latest_row[0] if latest_row else None
+
         q = f"""
             SELECT dss.site_id, s.sector_id, s.site_type, s.site_name,
                    s.cost_center_code, s.region as site_code, s.segment_name,
                    s.cost_center_description, s.address_state, s.store_size,
                    s.latitude, s.longitude,
-                   AVG(dss.total_daily_used) as avg_daily_used,
-                   AVG(dss.total_gen_run_hr) as avg_gen_hr,
-                   MAX(dss.spare_tank_balance) as tank,
-                   AVG(dss.days_of_buffer) as buffer_days,
-                   AVG(dss.blackout_hr) as avg_blackout,
+                   SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as avg_daily_used,
+                   SUM(dss.total_gen_run_hr) / COUNT(DISTINCT dss.date) as avg_gen_hr,
+                   SUM(dss.blackout_hr) / COUNT(DISTINCT dss.date) as avg_blackout,
                    COUNT(DISTINCT dss.date) as data_days,
                    SUM(dss.total_daily_used) as total_liters,
                    SUM(dss.total_gen_run_hr) as total_gen_hr
@@ -76,6 +84,30 @@ def sites_summary(
             q += " AND s.sector_id = ?"; dp.append(sector)
         q += " GROUP BY dss.site_id ORDER BY avg_daily_used DESC"
         df = pd.read_sql_query(q, conn, params=dp)
+
+        # Latest day tank per site (SUM — each generator row = separate drum)
+        if latest_date and not df.empty:
+            dp_tank = [latest_date]
+            tq = "SELECT site_id, spare_tank_balance as tank FROM daily_site_summary WHERE date = ?"
+            if sector:
+                # Filter via sites table
+                tq = f"""SELECT dss.site_id, dss.spare_tank_balance as tank
+                         FROM daily_site_summary dss JOIN sites s ON dss.site_id=s.site_id
+                         WHERE dss.date = ? AND s.sector_id = ?"""
+                dp_tank.append(sector)
+            tank_df = pd.read_sql_query(tq, conn, params=dp_tank)
+            if not tank_df.empty:
+                df = df.merge(tank_df, on="site_id", how="left")
+            else:
+                df["tank"] = 0
+        else:
+            df["tank"] = 0
+
+        # Buffer = last_day_tank / avg_daily_fuel (3d or period avg)
+        df["buffer_days"] = np.where(
+            df["avg_daily_used"].fillna(0) > 0,
+            df["tank"].fillna(0) / df["avg_daily_used"], 0
+        )
 
         # Get sales for mapped sites
         sales = pd.read_sql_query(f"""
@@ -762,23 +794,29 @@ def sector_heatmap(
         latest_date = max_date_row[0] if max_date_row else None
 
         # Per-sector: last day tank + last day stats
+        # Use SUM for all metrics, then divide by sites for per-site averages
         df = pd.read_sql_query(f"""
             SELECT s.sector_id,
                    COUNT(DISTINCT dss.site_id) as total_sites,
                    SUM(dss.total_daily_used) as last_day_fuel,
                    SUM(dss.spare_tank_balance) as last_day_tank,
-                   AVG(dss.total_gen_run_hr) as avg_gen_hr,
-                   AVG(dss.blackout_hr) as avg_blackout,
+                   SUM(dss.total_gen_run_hr) as total_gen_hr,
+                   SUM(dss.blackout_hr) as total_blackout,
                    SUM(CASE WHEN dss.days_of_buffer < 3 THEN 1 ELSE 0 END) as critical_count,
                    SUM(CASE WHEN dss.days_of_buffer >= 3 AND dss.days_of_buffer < 7 THEN 1 ELSE 0 END) as warning_count,
                    SUM(CASE WHEN dss.days_of_buffer >= 7 THEN 1 ELSE 0 END) as safe_count,
                    SUM(CASE WHEN dss.days_of_buffer IS NULL THEN 1 ELSE 0 END) as nodata_count
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE dss.date = '{latest_date}'{dsql}
+            WHERE dss.date = ?{dsql}
             GROUP BY s.sector_id
             ORDER BY s.sector_id
-        """, conn, params=dp)
+        """, conn, params=[latest_date] + dp)
+
+        # Compute per-site averages from SUM totals
+        if not df.empty:
+            df["avg_gen_hr"] = np.where(df["total_sites"] > 0, df["total_gen_hr"] / df["total_sites"], 0)
+            df["avg_blackout"] = np.where(df["total_sites"] > 0, df["total_blackout"] / df["total_sites"], 0)
 
         # 3-day avg fuel per sector (for buffer calculation)
         avg3d_fuel = pd.read_sql_query(f"""
@@ -786,9 +824,9 @@ def sector_heatmap(
                    SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as avg_fuel_3d
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE dss.date >= date('{latest_date}', '-3 days') AND dss.date < '{latest_date}'{dsql}
+            WHERE dss.date >= date(?, '-3 days') AND dss.date < ?{dsql}
             GROUP BY s.sector_id
-        """, conn, params=dp)
+        """, conn, params=[latest_date, latest_date] + dp)
         avg3d_map = {r["sector_id"]: r["avg_fuel_3d"] for _, r in avg3d_fuel.iterrows()} if not avg3d_fuel.empty else {}
 
         # Compute buffer = last day tank / 3d avg fuel

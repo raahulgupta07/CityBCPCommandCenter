@@ -51,12 +51,28 @@ STATUS_COLORS = {
 }
 
 
+class ColumnGroup(BaseModel):
+    group: str = ""
+    color: Optional[str] = None
+    cols: list[str]
+
+
 class ExportRequest(BaseModel):
     table_name: str
     data: list[dict]
     columns: Optional[list[str]] = None
     filters: Optional[str] = None
-    status_columns: Optional[list[str]] = None  # columns to apply status badge coloring
+    status_columns: Optional[list[str]] = None
+    column_groups: Optional[list[ColumnGroup]] = None  # merged header groups
+
+
+# Group color map
+GROUP_COLORS = {
+    '#383832': DARK_BG, '#65655e': PatternFill(start_color='65655E', end_color='65655E', fill_type='solid'),
+    '#006f7c': CYAN_BG, '#9d4867': PatternFill(start_color='9D4867', end_color='9D4867', fill_type='solid'),
+    '#007518': GREEN_BG, '#be2d06': RED_BG, '#e85d04': PatternFill(start_color='E85D04', end_color='E85D04', fill_type='solid'),
+    '#ff9d00': AMBER_BG,
+}
 
 
 @router.post("/export/excel")
@@ -66,11 +82,12 @@ def export_excel(req: ExportRequest, user: dict = Depends(get_current_user)):
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = req.table_name[:31]  # Excel sheet name limit
+    ws.title = req.table_name[:31]
 
     # Determine columns
     columns = req.columns or list(req.data[0].keys())
     status_cols = set(req.status_columns or [])
+    has_groups = req.column_groups and len(req.column_groups) > 0
 
     # ─── Row 1: Title bar (dark background) ─────────────────
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
@@ -95,18 +112,48 @@ def export_excel(req: ExportRequest, user: dict = Depends(get_current_user)):
         ws.cell(row=2, column=c).fill = DARK_BG
     ws.row_dimensions[2].height = 22
 
-    # ─── Row 3: Column headers ──────────────────────────────
+    # ─── Row 3: Merged group headers (if column_groups provided) ──
+    header_row = 3
+    if has_groups:
+        col_pos = 1
+        for g in req.column_groups:
+            n_cols = len(g.cols)
+            if g.group and n_cols > 0:
+                if n_cols > 1:
+                    ws.merge_cells(start_row=3, start_column=col_pos, end_row=3, end_column=col_pos + n_cols - 1)
+                cell = ws.cell(row=3, column=col_pos, value=g.group)
+                fill = GROUP_COLORS.get(g.color or '', DARK_BG)
+                cell.font = Font(name='Calibri', bold=True, size=9, color='FFFFFF')
+                cell.fill = fill
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                cell.border = BORDER
+                # Fill all merged cells
+                for ci in range(col_pos, col_pos + n_cols):
+                    ws.cell(row=3, column=ci).fill = fill
+                    ws.cell(row=3, column=ci).border = BORDER
+            else:
+                # No group label — dark background
+                for ci in range(col_pos, col_pos + n_cols):
+                    ws.cell(row=3, column=ci).fill = DARK_BG
+                    ws.cell(row=3, column=ci).border = BORDER
+            col_pos += n_cols
+        ws.row_dimensions[3].height = 22
+        header_row = 4
+
+    # ─── Column sub-headers ──────────────────────────────
     for col_idx, col_name in enumerate(columns, 1):
-        cell = ws.cell(row=3, column=col_idx, value=col_name.upper().replace('_', ' '))
+        cell = ws.cell(row=header_row, column=col_idx, value=col_name.upper().replace('_', ' '))
         cell.font = HEADER_FONT
         cell.fill = HEADER_BG
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.border = BORDER
-    ws.row_dimensions[3].height = 28
+    ws.row_dimensions[header_row].height = 28
+
+    data_start = header_row + 1
 
     # ─── Data rows ──────────────────────────────────────────
     for row_idx, record in enumerate(req.data):
-        r = row_idx + 4  # start at row 4
+        r = row_idx + data_start
         is_alt = row_idx % 2 == 1
         fill = ROW_ALT if is_alt else ROW_WHITE
 
@@ -135,6 +182,59 @@ def export_excel(req: ExportRequest, user: dict = Depends(get_current_user)):
                     cell.font = WHITE_FONT
                     cell.alignment = Alignment(horizontal='center', vertical='center')
 
+            # String value coloring
+            if isinstance(val, str):
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+                col_lower = col_name.lower()
+                higher_is_good = any(k in col_lower for k in ['sales', 'margin', 'tank'])
+
+                # Buffer values (e.g. "10.4d", "0.0d")
+                if val.endswith('d') and col_lower in ('buffer', 'buffer_days'):
+                    try:
+                        bv = float(val[:-1])
+                        if bv >= 7:
+                            cell.font = GREEN_FONT
+                        elif bv >= 3:
+                            cell.font = AMBER_FONT
+                        else:
+                            cell.font = RED_FONT
+                    except ValueError:
+                        pass
+
+                # Heatmap icon coloring (🟢🟡🟠🔴) — keep emoji, apply font color
+                if '🟢' in val:
+                    cell.font = GREEN_FONT
+                elif '🟡' in val or '🟠' in val:
+                    cell.font = AMBER_FONT
+                elif '🔴' in val:
+                    cell.font = RED_FONT
+
+                # Change indicators (▲▼→ with %) — color based on direction + metric
+                if '▲' in val:
+                    cell.font = Font(name='Calibri', bold=True, size=10,
+                                     color='007518' if higher_is_good else 'BE2D06')
+                elif '▼' in val:
+                    cell.font = Font(name='Calibri', bold=True, size=10,
+                                     color='BE2D06' if higher_is_good else '007518')
+                elif '→' in val and '%' in val:
+                    cell.font = Font(name='Calibri', size=10, color='65655E')
+                elif val == '—':
+                    cell.font = Font(name='Calibri', size=10, color='9D9D91')
+
+                # Percentage values with color (diesel %, margin %)
+                if '%' in val and '▲' not in val and '▼' not in val and '→' not in val:
+                    if 'diesel_pct' in col_lower or 'exp' in col_lower:
+                        try:
+                            pv = float(val.replace('%', ''))
+                            if pv > 3:
+                                cell.font = RED_FONT
+                            elif pv > 1.5:
+                                cell.font = AMBER_FONT
+                            elif pv > 0:
+                                cell.font = GREEN_FONT
+                        except ValueError:
+                            pass
+
     # ─── Auto-fit column widths ─────────────────────────────
     for col_idx, col_name in enumerate(columns, 1):
         max_len = len(col_name) + 2
@@ -145,7 +245,7 @@ def export_excel(req: ExportRequest, user: dict = Depends(get_current_user)):
         ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len, 35)
 
     # ─── Freeze panes (freeze header rows) ──────────────────
-    ws.freeze_panes = 'A4'
+    ws.freeze_panes = f'A{data_start}'
 
     # ─── Write to buffer ────────────────────────────────────
     buf = io.BytesIO()

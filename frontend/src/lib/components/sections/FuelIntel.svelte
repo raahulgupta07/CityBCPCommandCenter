@@ -2,6 +2,7 @@
 	import { api, downloadExcel } from '$lib/api';
 	import { onMount } from 'svelte';
 	import Chart from '$lib/components/Chart.svelte';
+	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 	import { lineChart, hbarChart } from '$lib/charts';
 
 	let buySignal: any = $state({});
@@ -195,6 +196,8 @@
 	);
 </script>
 
+<AiInsightPanel type="kpi" data={{ tab: 'fuel_cost', summary: 'Fuel procurement signals, weekly budget forecast, price trends, purchase history, break-even analysis, site mapping' }} title="AI INSIGHT — FUEL & COST STRATEGY" />
+
 {#if loading}
 	<div class="flex items-center justify-center py-16">
 		<span class="text-sm font-black uppercase animate-pulse" style="color:#383832;">LOADING FUEL INTEL...</span>
@@ -223,7 +226,11 @@
 		style="background: white; border: 1px solid #383832; color: #383832;" />
 </div>
 
-<!-- ============ SECTION 1: SUPPLIER BUY SIGNAL ============ -->
+<!-- CHAPTER 1 -->
+<div id="fuel-buy" class="scroll-mt-36 px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">shopping_cart</span><div><div class="font-black uppercase text-sm">CHAPTER 1: SHOULD WE BUY FUEL?</div><div class="text-[10px] opacity-75">Supplier signals — is now a good time to purchase?</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which supplier has the best price? BUY now or WAIT?</div>
+</div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">
@@ -280,7 +287,11 @@
 	{/if}
 </div>
 
-<!-- ============ SECTION 2: WEEKLY BUDGET BREAKDOWN ============ -->
+<!-- CHAPTER 2 -->
+<div id="fuel-budget" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">account_balance</span><div><div class="font-black uppercase text-sm">CHAPTER 2: WEEKLY BUDGET</div><div class="text-[10px] opacity-75">How much fuel do we need this week and what will it cost?</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Total liters needed? Total cost? Per sector breakdown?</div>
+</div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">WEEKLY_BUDGET_FORECAST</h2>
@@ -297,7 +308,7 @@
 	</div>
 
 	{#if budgetRows.length > 0}
-		<div class="overflow-x-auto" style="border:2px solid #383832;">
+		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
 					<tr style="background:#383832;">
@@ -335,7 +346,11 @@
 	{/if}
 </div>
 
-<!-- ============ SECTION 3: FUEL PRICE FORECAST CHART ============ -->
+<!-- CHAPTER 3 -->
+<div id="fuel-price" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">show_chart</span><div><div class="font-black uppercase text-sm">CHAPTER 3: PRICE TRENDS & FORECAST</div><div class="text-[10px] opacity-75">Are fuel prices going up or down? ML-powered 7-day forecast.</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Price trend? Which supplier is cheapest? What's the 7-day forecast?</div>
+</div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">FUEL_PRICE_FORECAST</h2>
@@ -352,7 +367,11 @@
 	{/if}
 </div>
 
-<!-- ============ SECTION 4: PURCHASE LOG ============ -->
+<!-- CHAPTER 4 -->
+<div id="fuel-purchases" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">receipt_long</span><div><div class="font-black uppercase text-sm">CHAPTER 4: PURCHASE LOG</div><div class="text-[10px] opacity-75">Historical fuel purchase records — dates, suppliers, quantities, prices.</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? When did we last buy? How much? At what price?</div>
+</div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">PURCHASE_LOG &mdash; RECENT</h2>
@@ -364,7 +383,7 @@
 	</div>
 
 	{#if recentLog.length > 0}
-		<div class="overflow-x-auto" style="border:2px solid #383832;">
+		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
 					<tr style="background:#383832;">
@@ -395,7 +414,11 @@
 	{/if}
 </div>
 
-<!-- ============ SECTION 4b: PRICE ANALYSIS ============ -->
+<!-- CHAPTER 5 -->
+<div id="fuel-analysis" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">analytics</span><div><div class="font-black uppercase text-sm">CHAPTER 5: PRICE ANALYSIS</div><div class="text-[10px] opacity-75">Supplier price comparison and cost breakdown by sector.</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which supplier is cheapest per sector? How do prices compare?</div>
+</div>
 <div style="background: #383832; color: #feffd6;" class="px-4 py-2.5 font-black text-sm uppercase mt-6">PRICE ANALYSIS</div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 mb-6">
@@ -424,7 +447,7 @@
 				</button>
 			</div>
 		</div>
-		<div class="overflow-x-auto" style="border:2px solid #383832;">
+		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
 					<tr style="background:#383832;">
@@ -459,7 +482,11 @@
 	</div>
 {/if}
 
-<!-- ============ SECTION 5: BREAK-EVEN ANALYSIS ============ -->
+<!-- CHAPTER 6 -->
+<div id="fuel-breakeven" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">balance</span><div><div class="font-black uppercase text-sm">CHAPTER 6: BREAK-EVEN ANALYSIS</div><div class="text-[10px] opacity-75">Which sites cost more in diesel than they earn in sales?</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites are above break-even? Should any sites close?</div>
+</div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">BREAK_EVEN_ANALYSIS</h2>
@@ -476,7 +503,7 @@
 	</div>
 
 	{#if sortedBreakEven.length > 0}
-		<div class="overflow-x-auto" style="border:2px solid #383832;">
+		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
 					<tr style="background:#ebe8dd;">
@@ -520,7 +547,11 @@
 	{/if}
 </div>
 
-<!-- ============ SECTION 6: MAPPED SITES ============ -->
+<!-- CHAPTER 7 -->
+<div id="fuel-mapped" class="scroll-mt-36 px-4 py-3 mb-3 mt-6" style="background: #383832; color: #feffd6;">
+	<div class="flex items-center gap-3"><span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">link</span><div><div class="font-black uppercase text-sm">CHAPTER 7: SITE MAPPING</div><div class="text-[10px] opacity-75">Sites mapped to sales data — which sites have revenue tracking?</div></div></div>
+	<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites are mapped? Which are missing sales data?</div>
+</div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">MAPPED_SITES</h2>
@@ -535,7 +566,7 @@
 	</div>
 
 	{#if mapped.length > 0}
-		<div class="overflow-x-auto" style="border:2px solid #383832;">
+		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
 					<tr style="background:#ebe8dd;">
@@ -568,7 +599,7 @@
 	{/if}
 </div>
 
-<!-- ============ SECTION 7: UNMAPPED SITES ============ -->
+<!-- Unmapped sites section -->
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
 		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">UNMAPPED_SITES</h2>
@@ -586,7 +617,7 @@
 		<div class="p-3 mb-3 text-xs font-bold" style="background:#feffd6;border:2px solid #ff9d00;color:#be2d06;">
 			These sites have no sales data &mdash; diesel% cannot be calculated
 		</div>
-		<div class="overflow-x-auto" style="border:2px solid #383832;">
+		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
 					<tr style="background:#ebe8dd;">
@@ -697,3 +728,59 @@
 {/if}
 
 {/if}
+
+<!-- Formula Reference -->
+<div style="border-top: 2px solid #383832; margin-top: 1.5rem;">
+	<div class="px-4 py-2 flex items-center gap-2" style="background: #383832; color: #feffd6;">
+		<span class="material-symbols-outlined text-sm" style="color: #00fc40;">functions</span>
+		<span class="text-[11px] font-black uppercase">FORMULA REFERENCE</span>
+	</div>
+	<div class="overflow-x-auto">
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead>
+				<tr style="background: #ebe8dd;">
+					<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832; width: 160px;">METRIC</th>
+					<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FORMULA</th>
+					<th class="py-1.5 px-3 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SOURCE</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #007518;">BUY SIGNAL</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">if current_price &lt; avg_price → BUY, if trend FALLING → WAIT, else HOLD</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fuel_purchases</code></td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #e85d04;">WEEKLY BUDGET</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">avg_daily_liters × 7 × price_per_liter</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td>
+				</tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #006f7c;">PRICE FORECAST</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">Ridge regression on 7-day lag features (lag_1, lag_3, rolling_mean)</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fuel_price_forecast</code></td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #383832;">PURCHASE PRICE</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">latest fuel_purchases.price_per_liter per sector per date</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">fuel_purchases</code></td>
+				</tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #9d4867;">BREAK-EVEN</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">daily_fuel_cost ÷ daily_sales × 100</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">energy_cost</code></td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #65655e;">SITE MAPPING</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">sites matched to daily_sales via cost_center_code</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">daily_sales</code></td>
+				</tr>
+				<tr style="background: white; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-3 font-bold" style="color: #be2d06;">DIESEL %</td>
+					<td class="py-1.5 px-3 font-mono" style="color: #383832;">(fuel_used × price) ÷ sales × 100</td>
+					<td class="py-1.5 px-3" style="color: #9d9d91;"><code class="px-1 py-0.5 text-[9px]" style="background: #ebe8dd; color: #65655e;">derived</code></td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+</div>
