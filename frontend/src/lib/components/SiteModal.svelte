@@ -1,16 +1,28 @@
 <script lang="ts">
 	import { api, downloadExcel } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
+	import InfoTip from '$lib/components/InfoTip.svelte';
 	import PeakHours from '$lib/components/sections/PeakHours.svelte';
+	import { KPI } from '$lib/kpi-definitions';
 	import { lineChart, dualAxisChart, barChart, hbarChart, groupedBar, pieChart } from '$lib/charts';
 
-	let { siteId = '', sites = [], onclose }: { siteId?: string; sites?: string[]; onclose?: () => void } = $props();
+	let { siteId = '', sites = [], siteNames = {} as Record<string, string>, onclose }: { siteId?: string; sites?: string[]; siteNames?: Record<string, string>; onclose?: () => void } = $props();
 
 	let data: any = $state(null);
 	let loading = $state(true);
 	let error = $state('');
 	let selected = $state(siteId);
 	let period = $state('daily');
+	let siteSearch = $state('');
+	let siteDropOpen = $state(false);
+	let pdfGenerating = $state(false);
+
+	const filteredSiteList = $derived(
+		siteSearch
+			? sites.filter(s => s.toLowerCase().includes(siteSearch.toLowerCase()) || (siteNames[s] || '').toLowerCase().includes(siteSearch.toLowerCase()))
+			: sites
+	);
+	const selectedName = $derived(data?.site?.site_name || data?.site?.cost_center_name || siteNames[selected] || '');
 
 	async function load(id: string) {
 		if (!id) return;
@@ -27,9 +39,87 @@
 		}
 	}
 
-	$effect(() => { if (selected) load(selected); });
+	$effect(() => { const _s = selected; const _p = period; if (_s) load(_s); });
 
 	function fmt(v: number) { return v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : v.toFixed(v < 10 ? 1 : 0); }
+
+	const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+	function fmtPeriodLabel(row: any, per: string): string {
+		if (per === 'daily') return row.date || '';
+		if (per === 'monthly') {
+			const dt = new Date(row.date_start || row.date);
+			return MN[dt.getMonth()] + ' ' + dt.getFullYear();
+		}
+		// weekly: "29 Mar - 04 Apr '26" or "05 - 11 Apr '26"
+		const s = new Date(row.date_start || row.date);
+		const e = new Date(row.date_end || row.date);
+		const sy = String(s.getFullYear()).slice(2);
+		const sd = s.getDate();
+		const sm = MN[s.getMonth()];
+		const ed = e.getDate();
+		const em = MN[e.getMonth()];
+		if (s.getMonth() === e.getMonth()) return `${String(sd).padStart(2,'0')} - ${String(ed).padStart(2,'0')} ${em} '${sy}`;
+		return `${sd} ${sm} - ${String(ed).padStart(2,'0')} ${em} '${sy}`;
+	}
+
+	function aggregatePrices(prices: any[], per: string): { date: string; price: number; date_start?: string; date_end?: string }[] {
+		if (!prices || prices.length === 0) return [];
+		if (per === 'daily') return prices.map((p: any) => ({ date: p.date, price: p.price_per_liter || 0 }));
+		// Group by week or month
+		const groups: Record<string, { sum: number; count: number; dates: string[]; min: string; max: string }> = {};
+		for (const p of prices) {
+			const dt = new Date(p.date);
+			let key: string;
+			if (per === 'weekly') {
+				const weekStart = new Date(dt);
+				weekStart.setDate(dt.getDate() - dt.getDay());
+				key = weekStart.toISOString().slice(0, 10);
+			} else {
+				key = p.date.slice(0, 7); // YYYY-MM
+			}
+			if (!groups[key]) groups[key] = { sum: 0, count: 0, dates: [], min: p.date, max: p.date };
+			groups[key].sum += (p.price_per_liter || 0);
+			groups[key].count++;
+			groups[key].dates.push(p.date);
+			if (p.date < groups[key].min) groups[key].min = p.date;
+			if (p.date > groups[key].max) groups[key].max = p.date;
+		}
+		return Object.entries(groups)
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([_, g]) => ({ date: g.min, price: Math.round(g.sum / g.count), date_start: g.min, date_end: g.max }));
+	}
+
+	async function exportPDF() {
+		const el = document.querySelector('.site-report-content');
+		if (!el) return;
+		pdfGenerating = true;
+		try {
+			const { default: html2canvas } = await import('html2canvas');
+			const { jsPDF } = await import('jspdf');
+			const canvas = await html2canvas(el as HTMLElement, { scale: 2, useCORS: true, backgroundColor: '#feffd6' });
+			const imgData = canvas.toDataURL('image/png');
+			const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+			const pageW = pdf.internal.pageSize.getWidth();
+			const pageH = pdf.internal.pageSize.getHeight();
+			const imgW = pageW - 20;
+			const imgH = (canvas.height * imgW) / canvas.width;
+			let y = 10;
+			const pageContentH = pageH - 20;
+			if (imgH <= pageContentH) {
+				pdf.addImage(imgData, 'PNG', 10, y, imgW, imgH);
+			} else {
+				let remainingH = imgH;
+				while (remainingH > 0) {
+					pdf.addImage(imgData, 'PNG', 10, y - (imgH - remainingH), imgW, imgH);
+					remainingH -= pageContentH;
+					if (remainingH > 0) { pdf.addPage(); y = 10; }
+				}
+			}
+			pdf.save(`Site_Report_${selected}_${new Date().toISOString().slice(0,10)}.pdf`);
+		} finally {
+			pdfGenerating = false;
+		}
+	}
 </script>
 
 <!-- Modal Overlay -->
@@ -37,40 +127,87 @@
 	<div class="w-full sm:w-[95vw] max-w-[1400px] max-h-[90vh] overflow-y-auto mx-auto py-6 px-4">
 		<!-- Header -->
 		<div class="flex items-center justify-between mb-6 p-4" style="background: #383832; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px rgba(0,0,0,0.3);">
-			<div class="flex items-center gap-4">
+			<div class="flex items-center gap-4 flex-wrap">
 				<h1 class="text-xl font-black uppercase" style="color: #feffd6;">SITE_DEEP_DIVE</h1>
-				<select bind:value={selected} class="px-3 py-2 text-sm font-bold uppercase" style="background: #feffd6; border: 2px solid #feffd6; color: #383832;">
-					{#each sites as s}
-						<option value={s}>{s}</option>
-					{/each}
-				</select>
+				<!-- Searchable site selector -->
+				<div class="relative">
+					<button onclick={() => { siteDropOpen = !siteDropOpen; siteSearch = ''; }}
+						class="px-3 py-2 text-sm font-bold uppercase flex items-center gap-2"
+						style="background: #feffd6; border: 2px solid #feffd6; color: #383832; min-width: 200px;">
+						<span>{selected}</span>
+						{#if selectedName}
+							<span class="text-[10px] font-normal truncate max-w-[150px]" style="color: #65655e;">{selectedName}</span>
+						{/if}
+						<span class="ml-auto text-xs">▾</span>
+					</button>
+					{#if siteDropOpen}
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="fixed inset-0 z-40" onclick={() => siteDropOpen = false}></div>
+						<div class="absolute top-full left-0 z-50 mt-1 w-[320px]" style="background: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+							<input type="text" bind:value={siteSearch} placeholder="Search by name or code..."
+								class="w-full px-3 py-2 text-xs font-mono uppercase"
+								style="border: none; border-bottom: 2px solid #383832; color: #383832;" />
+							<div class="max-h-[250px] overflow-y-auto">
+								{#each filteredSiteList as s}
+									<button onclick={() => { selected = s; siteDropOpen = false; }}
+										class="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-100 flex justify-between items-center"
+										style="border-bottom: 1px solid #ebe8dd; {s === selected ? 'background: #f0ede3; font-weight: 900;' : ''}">
+										<span class="font-bold" style="color: #383832;">{siteNames[s] || s}</span>
+										<span class="text-[10px] font-mono" style="color: #65655e;">{s}</span>
+									</button>
+								{/each}
+								{#if filteredSiteList.length === 0}
+									<div class="px-3 py-3 text-center text-xs" style="color: #65655e;">No sites match "{siteSearch}"</div>
+								{/if}
+							</div>
+						</div>
+					{/if}
+				</div>
 				<div class="flex">
 					{#each [['daily','D'],['weekly','W'],['monthly','M']] as [val, lbl]}
 						<button
-							onclick={() => { period = val; load(selected); }}
+							onclick={() => { period = val; }}
 							class="px-3 py-2 text-xs font-black uppercase"
 							style="border: 2px solid #feffd6; {period === val ? 'background: #feffd6; color: #383832;' : 'background: transparent; color: #feffd6;'}"
 						>{lbl}</button>
 					{/each}
 				</div>
 			</div>
-			<button onclick={() => onclose?.()} class="text-2xl px-2 font-black" style="color: #feffd6;">✕</button>
+			<div class="flex items-center gap-2">
+				<button onclick={exportPDF} disabled={pdfGenerating} class="flex items-center gap-1 px-3 py-1.5 text-[10px] font-black uppercase no-print"
+					style="background: #feffd6; color: #383832; border: 2px solid #feffd6;">
+					<span class="material-symbols-outlined text-sm">picture_as_pdf</span> {pdfGenerating ? '...' : 'PDF'}
+				</button>
+				<button onclick={() => onclose?.()} class="text-2xl px-2 font-black no-print" style="color: #feffd6;">✕</button>
+			</div>
 		</div>
 
+		<div class="p-6 site-report-content" style="background: #feffd6; border: 2px solid #383832;">
 		{#if data}
-		<div class="flex flex-wrap gap-4 text-[10px] px-4 py-2" style="background: #ebe8dd; border: 2px solid #383832; border-bottom: 1px solid #383832; margin-bottom: 0;">
-			{#each [
-				['COST_CENTER', data.site?.site_id || selected],
-				['SITE_CODE', data.site?.site_code || data.site?.region || ''],
-				['SEGMENT', data.site?.segment_name || ''],
-				['LOCATION', [data.site?.address_state, data.site?.address_township].filter(Boolean).join(', ')],
-				['SIZE', data.site?.store_size || ''],
-			].filter(([,v]) => v) as [label, value]}
-				<div><span style="color: #65655e;">{label}:</span> <span class="font-bold" style="color: #383832;">{value}</span></div>
-			{/each}
+		<!-- Site Info (inside PDF capture area) -->
+		<div class="px-4 py-3 mb-4 -mx-6 -mt-6" style="background: #ebe8dd; border-bottom: 2px solid #383832;">
+			<div class="flex items-center gap-3 mb-1">
+				<span class="text-lg font-black" style="color: #383832;">BCP SITE REPORT</span>
+				<span class="text-[10px]" style="color: #65655e;">|</span>
+				<span class="text-sm font-black" style="color: #383832;">{data.site?.site_name || data.site?.cost_center_name || selected}</span>
+				<span class="text-[10px] font-mono px-1.5 py-0.5" style="background: #383832; color: #feffd6;">{data.site?.site_id || selected}</span>
+				{#if data.site?.site_code || data.site?.region}
+					<span class="text-[10px] font-mono" style="color: #65655e;">{data.site?.site_code || data.site?.region}</span>
+				{/if}
+			</div>
+			<div class="flex flex-wrap gap-4 text-[10px]">
+				{#each [
+					['SEGMENT', data.site?.segment_name || ''],
+					['SECTOR', data.site?.sector_id || ''],
+					['LOCATION', [data.site?.address_state, data.site?.address_township].filter(Boolean).join(', ')],
+					['SIZE', data.site?.store_size || ''],
+					['GENERATED', new Date().toLocaleString()],
+				].filter(([,v]) => v) as [label, value]}
+					<div><span style="color: #65655e;">{label}:</span> <span class="font-bold" style="color: #383832;">{value}</span></div>
+				{/each}
+			</div>
 		</div>
 		{/if}
-		<div class="p-6" style="background: #feffd6; border: 2px solid #383832;">
 		{#if loading}
 			<p class="text-center py-20 font-bold uppercase" style="color: #65655e;">Loading site data...</p>
 		{:else if error}
@@ -92,22 +229,102 @@
 			{@const d = data.daily || []}
 			{@const gens = data.generators || []}
 			{@const gd = data.gen_daily || []}
-			{@const dates = d.map((r: any) => r.date)}
+			{@const dates = d.map((r: any) => fmtPeriodLabel(r, period))}
 			{@const price = data.fuel_price || 0}
 
-			<!-- KPI Cards -->
 			{@const last = d.length > 0 ? d[d.length - 1] : null}
-			<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+			{@const rawDates = d.map((r: any) => r.date)}
+			{@const firstDate = d.length > 0 ? (d[0].date_start || d[0].date || '—') : '—'}
+			{@const lastDate = d.length > 0 ? (d[d.length-1].date_end || d[d.length-1].date || '—') : '—'}
+			{@const rd = d.slice(-4)}
+			{@const pL = period === 'daily' ? 'day' : period === 'weekly' ? 'week' : 'month'}
+			{@const pU = pL.charAt(0).toUpperCase()}
+			{@const isD = period === 'daily'}
+			{@const suffix = isD ? '' : '/day'}
+
+			<!-- Date Range Bar -->
+			<div class="flex items-center gap-3 mb-3 px-3 py-1.5" style="background: #ebe8dd; border: 1px solid #d5d2c7;">
+				<span class="text-[9px] font-black uppercase" style="color: #65655e;">DATA RANGE:</span>
+				<span class="text-[10px] font-mono font-bold" style="color: #383832;">{firstDate} &rarr; {lastDate}</span>
+				<span class="text-[9px]" style="color: #9d9d91;">({d.length} {pL}s)</span>
+				<span class="text-[9px] font-bold ml-auto" style="color: #65655e;">PERIOD: {period === 'daily' ? 'DAILY' : period === 'weekly' ? 'WEEKLY' : 'MONTHLY'}</span>
+				{#if !isD}
+					<span class="text-[8px]" style="color: #9d9d91;">values = daily avg</span>
+				{/if}
+			</div>
+
+			<!-- KPI Cards (Overview chart style) -->
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
 				{#each [
-					{ label: 'BUFFER', value: last?.buffer ? last.buffer.toFixed(1) + 'd' : '—', clr: (last?.buffer || 0) < 3 ? '#be2d06' : (last?.buffer || 0) < 7 ? '#ff9d00' : '#007518' },
-					{ label: 'TANK', value: last?.tank ? fmt(last.tank) + 'L' : '—', clr: '#006f7c' },
-					{ label: 'DAILY_BURN', value: d.length > 0 ? fmt(d.reduce((s: number, r: any) => s + (r.fuel || 0), 0) / d.length) + 'L' : '—', clr: '#ff9d00' },
-					{ label: 'TOTAL_COST', value: d.length > 0 ? fmt(d.reduce((s: number, r: any) => s + (r.cost || 0), 0)) : '—', clr: '#9d4867' },
-					{ label: 'GENERATORS', value: gens.length.toString(), clr: '#006f7c' },
-				] as kpi}
-					<div class="p-4 text-center" style="background: white; border: 2px solid #383832; border-bottom-width: 4px; border-right-width: 4px;">
-						<div class="text-[10px] font-black uppercase px-2 py-0.5 inline-block mb-1" style="background: #383832; color: #feffd6;">{kpi.label}</div>
-						<div class="text-xl font-black" style="color: {kpi.clr};">{kpi.value}</div>
+					{ tl: 'BUFFER (DAYS)', key: 'buffer', t1: last?.buffer || 0, dec: 1, good: 'high', color: '#007518', tc: isD ? 'tank &divide; avg_burn' : 'AVG(daily buffer) per ' + pL, unit: 'd', tip: KPI.siteModal.buffer },
+					{ tl: 'TANK BAL (L)', key: 'tank', t1: last?.tank || 0, dec: 0, good: 'high', color: '#006f7c', tc: isD ? 'spare_tank on date' : 'AVG(daily tank) per ' + pL, unit: 'L', tip: KPI.siteModal.tank },
+					{ tl: isD ? 'FUEL USED (L)' : 'FUEL (L' + suffix + ')', key: 'fuel', t1: last?.fuel || 0, dec: 0, good: 'low', color: '#e85d04', tc: isD ? 'total_daily_used' : 'AVG(daily_used) per ' + pL, unit: 'L', tip: KPI.siteModal.fuelUsed },
+					{ tl: isD ? 'GEN RUN HR' : 'GEN HR' + suffix, key: 'gen_hr', t1: last?.gen_hr || 0, dec: 1, good: 'low', color: '#ff9d00', tc: isD ? 'gen_run_hr' : 'AVG(daily gen_hr) per ' + pL, unit: 'hr', tip: KPI.siteModal.genHr },
+					{ tl: isD ? 'BLACKOUT HR' : 'BLACKOUT' + suffix, key: 'blackout_hr', t1: last?.blackout_hr || 0, dec: 1, good: 'low', color: '#be2d06', tc: isD ? 'blackout_hr' : 'AVG(daily blackout) per ' + pL, unit: 'hr', tip: KPI.siteModal.blackout },
+					{ tl: isD ? 'DIESEL COST (MMK)' : 'COST (MMK' + suffix + ')', key: 'cost', t1: last?.cost || 0, dec: 0, good: 'low', color: '#9d4867', tc: isD ? 'fuel &times; price' : 'AVG(daily cost) per ' + pL, unit: '', tip: KPI.siteModal.cost },
+				] as m}
+					{@const vals = rd.map((r: any) => r[m.key] || 0)}
+					{@const maxVal = Math.max(...vals, 1)}
+					{@const avg3 = rd.length >= 4 ? (vals[0] + vals[1] + vals[2]) / 3 : (vals.length > 1 ? vals.slice(0, -1).reduce((a: number, b: number) => a + b, 0) / Math.max(vals.length - 1, 1) : 0)}
+					{@const tDiff = avg3 ? ((m.t1 - avg3) / Math.max(Math.abs(avg3), 0.01) * 100) : 0}
+					{@const tImpr = m.good === 'high' ? tDiff > 1 : tDiff < -1}
+					{@const tClr = Math.abs(tDiff) < 1 ? '#65655e' : tImpr ? '#007518' : '#be2d06'}
+					{@const tArr = tDiff > 1 ? '▲' : tDiff < -1 ? '▼' : '→'}
+					<div style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
+						<!-- Header -->
+						<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
+							<span class="text-[11px] font-black uppercase">{m.tl}</span>
+							<span class="flex items-center gap-2">
+								<span class="text-[10px] font-bold" style="color: {tClr};">{tArr}{Math.abs(tDiff).toFixed(0)}% vs 3{pU}</span>
+								<InfoTip {...m.tip} />
+							</span>
+						</div>
+						<!-- KPIs row -->
+						<div class="flex">
+							<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+								<div class="text-2xl font-black" style="color: #383832;">{m.dec ? m.t1.toFixed(m.dec) : fmt(m.t1)}</div>
+								<div class="text-[9px] font-bold" style="color: #65655e;">{isD ? 'TODAY' : period === 'weekly' ? 'THIS WEEK' : 'THIS MONTH'}</div>
+								<div class="text-[8px]" style="color: #9d9d91;">{last ? fmtPeriodLabel(last, period) : ''}</div>
+							</div>
+							<div class="p-3 flex flex-col justify-center" style="flex: 1;">
+								<div class="text-2xl font-black" style="color: #383832;">{m.dec ? avg3.toFixed(m.dec) : fmt(avg3)}</div>
+								<div class="text-[9px] font-bold" style="color: #65655e;">{isD ? '3D AVG' : period === 'weekly' ? '3W AVG' : '3M AVG'}</div>
+								<div class="text-[8px]" style="color: #9d9d91;">prior 3 {pL}s avg</div>
+							</div>
+						</div>
+						<!-- Horizontal bar chart -->
+						<div style="border-top: 1px solid #ebe8dd;">
+							{#each rd as day, di}
+								{@const isLatest = di === rd.length - 1}
+								{@const v = vals[di]}
+								{@const pct = maxVal > 0 ? (v / maxVal * 100) : 0}
+								{#if isLatest && rd.length >= 4}
+									<div class="px-3 py-0.5 flex items-center gap-2" style="border-top: 2px dashed {m.color};">
+										<span class="text-[8px] font-bold" style="color: {m.color};">3{pU} AVG: {m.dec ? avg3.toFixed(m.dec) : fmt(Math.round(avg3))}{suffix}</span>
+									</div>
+								{/if}
+								<div class="px-3 py-1 flex items-center gap-2" style="border-top: 1px solid {isLatest ? m.color : 'rgba(56,56,50,0.08)'}; {isLatest ? 'background: rgba(56,56,50,0.03);' : ''}">
+									<span class="text-[9px] shrink-0 {isLatest ? 'font-black' : ''}" style="color: {isLatest ? m.color : '#828179'}; {isD ? 'width: 2.5rem;' : 'width: 7rem; font-size: 7px;'}">
+										{fmtPeriodLabel(day, period)}
+									</span>
+									<div class="flex-1 h-4 relative" style="background: #f0ede3;">
+										<div class="h-full" style="width: {pct}%; background: {isLatest ? m.color : m.color + '60'};"></div>
+										{#if avg3 > 0}
+											<div class="absolute top-0 h-full w-px" style="left: {Math.min(avg3/maxVal*100, 100)}%; background: {m.color}; opacity: 0.5;"></div>
+										{/if}
+									</div>
+									<span class="text-[9px] w-12 text-right shrink-0 {isLatest ? 'font-black' : ''}" style="color: #383832;">{m.dec ? v.toFixed(m.dec) : fmt(Math.round(v))}{suffix}</span>
+									{#if isLatest && avg3 > 0}
+										{@const vsAvg = (v - avg3) / avg3 * 100}
+										{@const vClr = (m.good === 'high' ? vsAvg > 1 : vsAvg < -1) ? '#007518' : (m.good === 'high' ? vsAvg < -1 : vsAvg > 1) ? '#be2d06' : '#65655e'}
+										<span class="text-[8px] font-bold w-10 text-right shrink-0" style="color: {vClr};">{vsAvg > 0 ? '▲' : vsAvg < 0 ? '▼' : '→'}{Math.abs(vsAvg).toFixed(0)}%</span>
+									{:else}
+										<span class="w-10 shrink-0"></span>
+									{/if}
+								</div>
+							{/each}
+						</div>
+						<div class="px-3 py-1 text-[8px] font-mono" style="background: #f6f4e9; color: #9d9d91; border-top: 1px solid #ebe8dd;">{@html m.tc}</div>
 					</div>
 				{/each}
 			</div>
@@ -228,13 +445,14 @@
 
 					<!-- 8. Fuel Price -->
 					{#if data.fuel_prices?.length > 0}
+						{@const aggPrices = aggregatePrices(data.fuel_prices, period)}
 						<Chart option={lineChart(
-							data.fuel_prices.map((r: any) => r.date),
-							[{ name: 'Price/L', data: data.fuel_prices.map((r: any) => r.price_per_liter || 0), color: '#06b6d4' }],
-							{ title: 'Fuel Price Trend' }
+							aggPrices.map((r: any) => isD ? r.date : fmtPeriodLabel(r, period)),
+							[{ name: isD ? 'Price/L' : 'Avg Price/L', data: aggPrices.map((r: any) => r.price || 0), color: '#06b6d4' }],
+							{ title: isD ? 'Fuel Price Trend' : 'Fuel Price Trend (Avg per ' + pL + ')' }
 						)} height="260px" guide={{
-							formula: "Latest purchase price per liter (MMK) for this sector on each date.",
-							sources: [{ data: 'Price', file: 'Fuel Price Excel', col: 'Price Per Liter', method: 'LATEST' }],
+							formula: isD ? "Latest purchase price per liter (MMK) for this sector on each date." : "AVG(price_per_liter) per " + pL + " — averaged across all purchases in each " + pL + ".",
+							sources: [{ data: 'Price', file: 'Fuel Price Excel', col: 'Price Per Liter', method: isD ? 'LATEST' : 'AVG' }],
 							reading: [{ color: 'green', text: '✅ Stable/dropping = Good procurement' }, { color: 'red', text: '🔴 Rising trend = Cost pressure, consider bulk buying' }],
 							explain: "Tracks how much you pay per liter over time. Rising prices multiply into <b>higher daily costs</b>."
 						}} />
@@ -384,12 +602,16 @@
 			{#if gd.length > 0}
 				{@const genNames = [...new Set(gd.map((r: any) => r.model_name))] as string[]}
 				{@const genDates = [...new Set(gd.map((r: any) => r.date))].sort() as string[]}
-				{@const genColors = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6']}
+				{@const genLabels = genDates.map(d => {
+				const row = gd.find((x: any) => x.date === d);
+				return period === 'daily' ? d : fmtPeriodLabel(row, period);
+			})}
+			{@const genColors = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6']}
 
 				<h3 class="text-sm font-black uppercase mb-3" style="color: #383832;">🔧 Per-Generator Breakdown</h3>
 				<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
 					<!-- Per-Gen Run Hours -->
-					<Chart option={groupedBar(genDates,
+					<Chart option={groupedBar(genLabels,
 						genNames.map((g, i) => ({
 							name: String(g),
 							data: genDates.map(d => { const r = gd.find((x: any) => x.date === d && x.model_name === g); return Math.round(r?.gen_run_hr || 0); }),
@@ -404,7 +626,7 @@
 					}} />
 
 					<!-- Per-Gen Fuel Used -->
-					<Chart option={groupedBar(genDates,
+					<Chart option={groupedBar(genLabels,
 						genNames.map((g, i) => ({
 							name: String(g),
 							data: genDates.map(d => { const r = gd.find((x: any) => x.date === d && x.model_name === g); return Math.round(r?.daily_used_liters || 0); }),
@@ -448,6 +670,10 @@
 					<!-- #120 Stacked Diesel by Generator -->
 					<Chart option={(() => {
 						const stackDates = [...new Set(gd.map((r: any) => r.date))].sort() as string[];
+						const stackLabels = stackDates.map(d => {
+							const row = gd.find((x: any) => x.date === d);
+							return period === 'daily' ? d : fmtPeriodLabel(row, period);
+						});
 						const stackSeries = genNames.map((g, i) => ({
 							type: 'bar' as const,
 							name: String(g),
@@ -460,7 +686,7 @@
 							title: { text: 'Stacked Diesel by Generator', left: 'center', textStyle: { fontSize: 14 } },
 							tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
 							legend: { bottom: 0, textStyle: { fontSize: 10 } },
-							xAxis: { type: 'category', data: stackDates, axisLabel: { rotate: stackDates.length > 10 ? 45 : 0, fontSize: 10 } },
+							xAxis: { type: 'category', data: stackLabels, axisLabel: { rotate: stackLabels.length > 10 ? 45 : 0, fontSize: 10 } },
 							yAxis: { type: 'value', name: 'Liters', axisLabel: { formatter: (v: number) => v >= 1e3 ? (v/1e3).toFixed(1)+'K' : String(v) } },
 							series: stackSeries,
 							grid: { top: 50, bottom: 40, left: 60, right: 20 }
@@ -515,5 +741,7 @@
 			<PeakHours siteId={selected} />
 		{/if}
 		</div>
+
 	</div>
 </div>
+

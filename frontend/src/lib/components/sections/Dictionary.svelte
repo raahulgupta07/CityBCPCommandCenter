@@ -1,5 +1,4 @@
 <script lang="ts">
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 	let activeDict = $state('thresholds');
 
 	const dictTabs = [
@@ -70,8 +69,6 @@
 		{ file: 'Diesel Expense LY.xlsx', sheets: 'Various', data: 'Last-year baseline expense' },
 	];
 </script>
-
-<AiInsightPanel type="kpi" data={{ tab: 'dictionary', summary: 'BCP data dictionary — all KPI definitions, thresholds, operating modes, BCP grades, alert conditions, and reference data' }} title="AI INSIGHT — DATA DICTIONARY" />
 
 <!-- Dictionary Tab Bar -->
 <div class="mb-6">

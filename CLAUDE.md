@@ -7,8 +7,8 @@ CityBCPAgent is a Business Continuity Planning dashboard for managing backup gen
 ## Tech Stack
 - **Frontend:** SvelteKit 5 (Svelte 5 runes) + adapter-static (SPA mode) + ECharts + TailwindCSS 4
 - **Backend:** FastAPI (Python 3.12) serving both API (`/api/*`) and static frontend
-- **Database:** SQLite with WAL mode (`db/bcp.db`) — starts empty, user uploads all data
-- **ML:** scikit-learn (Ridge, Isolation Forest, GradientBoosting)
+- **Database:** SQLite with WAL mode (`db/bcp.db`) — starts empty, user uploads all data (24 tables)
+- **ML:** scikit-learn (Ridge, Isolation Forest, GradientBoosting, AR(3) LinearRegression), numpy Monte Carlo
 - **AI:** Gemini 3.1 Flash Lite via OpenRouter (google/gemini-3.1-flash-lite-preview)
 - **Auth:** JWT tokens (python-jose), role-based (super_admin/admin/user)
 - **Container:** Docker on port 8000
@@ -17,7 +17,7 @@ CityBCPAgent is a Business Continuity Planning dashboard for managing backup gen
 ```
 config/settings.py              — Sectors, thresholds, energy decision matrix
 db/                             — SQLite database (empty on first run, auto-created)
-utils/database.py               — 22 tables, WAL mode, auto-migration, init_db()
+utils/database.py               — 24 tables, WAL mode, auto-migration, init_db() (incl. chat_messages, store_center_allocation, excel_validation_cache)
 utils/auth.py                   — Legacy auth (roles, password hashing) — used by settings router
 utils/ai_agent.py               — AI insights: morning briefing, KPI/table/site/executive analysis, DB-cached (6hr TTL)
 utils/email_sender.py           — SMTP alerts, UI-configurable
@@ -46,7 +46,7 @@ backend/routers/auth.py         — JWT login/logout, role guards (get_current_u
 backend/routers/data.py         — /upload/validate, fuel data endpoints
 backend/routers/upload.py       — /upload (file import), /upload/clear, /upload/raw, /upload/history
 backend/routers/charts.py       — /sector-heatmap, /sites-summary, chart data
-backend/routers/insights.py     — /period-kpis, /yesterday-comparison, /sector-sites, /sector-snapshot
+backend/routers/insights.py     — /period-kpis, /yesterday-comparison, /sector-sites, /sector-snapshot, /sector-sites/allocated, /sector-sites/detect-allocated
 backend/routers/operations.py   — /operating-modes, /delivery-queue, /generator-risk, /transfers
 backend/routers/ai.py           — /insights (AI), /chat/history, /ws/chat (WebSocket with streaming tool calls)
 backend/routers/settings.py     — /users, /smtp, /recipients, /system/stats
@@ -68,7 +68,27 @@ frontend/src/lib/components/MiniChart.svelte   — Sparkline for KPI cards
 frontend/src/lib/components/KpiCard.svelte     — KPI card component
 frontend/src/lib/components/SiteModal.svelte   — Site detail modal
 frontend/src/lib/components/AiInsightPanel.svelte — AI insight with auto-load, cache, refresh
-frontend/src/lib/components/sections/          — Dashboard section components (SectorSites, SectorHeatmap, RiskPanel, FuelIntel, Predictions, OperatingModes, etc.)
+frontend/src/lib/components/sections/          — 16 dashboard section components:
+  SectorSites.svelte             — Site drill-down + CP Center allocation table
+  SectorHeatmap.svelte           — Sector-level aggregated metrics
+  RiskPanel.svelte               — 4 chapters: Stockout Forecast, BCP Grades, Alerts, Break-Even
+  FuelIntel.svelte               — Fuel trends, cost analysis, expense %
+  Predictions.svelte             — 15 ML forecasts (fuel, buffer, price, theft)
+  OperatingModes.svelte          — Operating modes, delivery queue, generator status
+  OperationsTables.svelte        — Operations data tables
+  GroupExtras.svelte              — Group-level additional metrics
+  Rankings.svelte                 — Site rankings by various metrics
+  TrendCharts.svelte             — Time-series trend charts
+  RollingCharts.svelte            — Rolling average charts
+  LngComparison.svelte           — LNG vs Regular site comparison
+  PeakHours.svelte               — Hourly sales vs diesel cost analysis
+  WhatIf.svelte                  — What-if scenario simulator
+  AiInsights.svelte              — AI executive briefing panel
+  Dictionary.svelte              — Data dictionary / formula reference
+
+frontend/src/lib/components/InfoTip.svelte     — ⓘ click-to-reveal KPI formula tooltip
+frontend/src/lib/kpi-definitions.ts            — 50+ KPI definitions (title, description, formula, example)
+frontend/static/favicon.svg                    — BCP Command Center browser tab icon
 ```
 
 ## Key Patterns
@@ -125,17 +145,75 @@ with get_db() as conn:
 ### Database (utils/database.py) — Key Behaviors:
 - **refresh_site_summary:** ALL columns use SUM (gen_hr, fuel, tank, blackout) — each generator row represents a separate drum/tank
 - **Clear data:** Deleting data also deletes generators + sites for clean re-upload
+- **excel_validation_cache:** Stores Excel totals (gen_hr, fuel, tank, blackout) per sector per date at upload time — used by DATA_QUALITY validation so no file-on-disk dependency after upload
 
 ### Authentication:
 - JWT tokens via python-jose
 - Roles: super_admin > admin > user
 - Guards: `get_current_user`, `require_admin`, `require_super_admin`
 - Super admin credentials from env (SUPER_ADMIN_USER/PASS)
+- JWT auto-generation: if `JWT_SECRET` not set, auto-generates and persists to `db/.jwt_secret` (survives container restarts via Docker volume)
+
+### CP Center Diesel Allocation:
+- `store_center_allocation` table maps 17 stores to their CP center with allocation percentages
+- Seeded with 17 mappings in `init_db()`
+- **4-check auto-detection:** UNKNOWN model + zero fuel + no L/hr spec + 1 generator = needs allocation
+- `/sector-sites/allocated` returns allocated store data
+- `/sector-sites/detect-allocated` auto-detects stores needing allocation
+- `/sector-sites` now EXCLUDES allocated stores (shown in separate CP CENTER ALLOCATION table)
+- **Allocation rules:**
+  - Blackout/Gen Hours = 100% shared (same event for center and store)
+  - Tank/Fuel = center value × allocation %
+  - Cost = allocated fuel × CP price
+- **CP CENTER (100% RAW)** validation columns show center's full data for verification
+
+### LY Baseline Columns:
+- `diesel_expense_ly` table has: `daily_avg_expense_mmk`, `pct_on_sales`
+- Both SECTOR_SITES and CP_CENTER_ALLOCATION tables show LY COST/DAY and LY D% columns
+- Allows comparing current diesel % vs last year baseline
+
+### Site Type Filter:
+- `siteType` prop passed to ALL 12 frontend section components
+- `site_type` query parameter on ALL 20 backend endpoints
+- Filter works across all dashboard tabs (Overview, Operations, Risk, Fuel, Predictions)
+
+### DatePicker Timezone Fix:
+- `toStr()` uses `getFullYear/getMonth/getDate` (local time) instead of `toISOString()` (UTC)
+- Fixes Myanmar UTC+6:30 offset causing dates to be 1 day behind
+
+### InfoTip System:
+- Every KPI card and chart header has an ⓘ icon. Click → popover with: What it means, Formula, Example.
+- Definitions centralized in `kpi-definitions.ts` (50+ entries).
+- InfoTip placed at far-right end of card headers, after % change indicators.
+
+### AI Insights Filter-Awareness:
+- `AiInsightPanel` tracks current filter state (sector, dates, site type, sites).
+- When filters change, shows yellow "Filters changed" banner with REFRESH button.
+- Filter state cached in localStorage alongside insight content.
+
+### Chat Charts:
+- AI chat can render inline ECharts. AI includes ```chart JSON blocks in responses.
+- Frontend `parseCharts()` extracts and renders as `<Chart>` components.
+- Supports line, bar, pie chart types.
+
+### Chat Markdown Tables:
+- `renderMarkdown()` converts markdown `| table |` syntax to styled HTML tables with dark headers and alternating rows.
+- Also supports `#` headings and numbered lists.
+
+### Security:
+- SQL injection: parameterized queries across all routers
+- CORS: configurable via `CORS_ORIGINS` env var
+- Hardcoded paths: removed all `/Users/` references
+- `.env`: API key removed, `.gitignore` covers all sensitive files
 
 ## Page Architecture
 
 ### Dashboard (frontend/src/routes/dashboard/+page.svelte):
-Tabs: Overview, Operations, Risk, Fuel, Predictions
+Tabs: Overview, Operations, Risk, Fuel, Predictions — all tabs receive `siteType` filter prop
+
+#### Overview Layout:
+- 2-column grid (60/40 split). Left: KPI cards (2 per row). Right: Situation Report + AI Executive Briefing (sticky sidebar).
+- AI Insights only on Overview tab (removed from all other tabs). Filter-aware with refresh button.
 
 #### Overview Cockpit:
 - **6 KPI Cards** — Gen Hours, Fuel Used, Tank Balance, Blackout Hours, Sales, Diesel Cost
@@ -150,11 +228,24 @@ Tabs: Overview, Operations, Risk, Fuel, Predictions
 - Buffer = last day tank / 3-day avg fuel (NOT AVG of per-site buffer days)
 
 #### Sector Sites (drill-down):
-- Full site table with columns: SALES_1D, SALES_3D, SALES_AVG, COST_1D, COST_3D, COST_AVG, EXP%_1D, EXP%_3D, EXP%_TOTAL, MARGIN%_1D, MARGIN%_3D
+- Full site table with columns: SALES_1D, SALES_3D, SALES_AVG, COST_1D, COST_3D, COST_AVG, EXP%_1D, EXP%_3D, EXP%_TOTAL, MARGIN%_1D, MARGIN%_3D, LY COST/DAY, LY D%
+- Allocated stores excluded from main table, shown in separate CP CENTER ALLOCATION table
+- CP CENTER ALLOCATION table includes: allocated metrics + CP CENTER (100% RAW) verification columns
 
 #### Upload Page:
 - DATA_QUALITY tab — compares Excel totals vs DB totals per date per sector
 - Detects issues: time-formatted cells (h:mm), missing SUM formulas
+
+#### Risk Panel (RiskPanel.svelte):
+4 chapters with scrollable tables (500px max-height):
+- **STOCKOUT FORECAST** — Sites sorted by urgency, colored days-left, trend arrows, confidence
+- **BCP RISK GRADES** — Grade distribution (A-F), composite scores, fuel/coverage/power/resilience
+- **ACTIVE ALERTS** — Severity counts (CRITICAL/WARNING/INFO), alert type badges, message table
+- **BREAK-EVEN ANALYSIS** — Avg fuel/day, avg sales, daily fuel cost, diesel % (conditional)
+- Auto-generated risk situation report at top
+- Formula reference transparency section
+- Excel export per chapter
+- Data: `/bcp-scores` (direct array), `/alerts` (full list), `/stockout-forecast` (direct array), `/break-even`
 
 ### Filters:
 - **Quick Filters** — Yesterday, 3D, 7D, 14D, 30D, 60D, All buttons
@@ -191,6 +282,17 @@ Retail                         CMHL, MCS              CMHL-xxx   CMHL-xxx_model
 - **Blackout:** SUM (filled on first row only per site per data entry instructions)
 - **3D comparison:** daily averages (not sums) for fair comparison with 1-day values
 - **Per Site:** total / number of distinct sites in period
+- **Allocated Blackout:** = CP center blackout (100% shared event)
+- **Allocated Gen Hours:** = CP center gen hours (100% shared)
+- **Allocated Tank:** = CP center tank x allocation %
+- **Allocated Fuel:** = CP center fuel x allocation %
+- **Allocated Buffer:** = allocated tank / 3-day avg allocated fuel
+- **Allocated Efficiency:** = center fuel / center gen hours (physical rate)
+- **Allocated Cost:** = allocated fuel x CP price
+- **Allocation Detection:** UNKNOWN model + zero fuel + no L/hr + 1 gen = needs allocation
+- **Monte Carlo Stockout:** 1000 simulations sampling daily burn from N(mean, std). Returns P10/P50/P90 stockout days + 7-day confidence band.
+- **AR(3) Fuel Forecast:** Autoregressive(3) model using sklearn LinearRegression. Features: [val(t-3), val(t-2), val(t-1)] → predict val(t). Rolls forward for 7-day horizon.
+- **GBR Price Forecast:** GradientBoostingRegressor (100 trees, depth 3, lr 0.1) alongside Ridge for fuel price prediction. Ensemble = average of Ridge + GBR.
 
 ## API Endpoints (key ones)
 
@@ -207,20 +309,38 @@ Retail                         CMHL, MCS              CMHL-xxx   CMHL-xxx_model
 
 ### /sector-sites
 - Site-level drill-down with columns: `last_day_sales`, `avg3d_sales`, `last_day_fuel_cost`, `avg3d_fuel_cost`, `exp_pct_last_day`, `exp_pct_3d`, `exp_pct_total`, `margin_pct_last_day`, `margin_pct_3d`
+- Now EXCLUDES allocated stores (stores mapped in `store_center_allocation`)
+- Accepts `site_type` filter parameter
+
+### /sector-sites/allocated
+- Returns allocated store data with center-derived metrics using allocation percentages
+- Includes LY COST/DAY and LY D% baseline columns
+- Includes CP CENTER (100% RAW) verification columns
+
+### /sector-sites/detect-allocated
+- Auto-detects stores needing allocation using 4-check logic
+- Returns list of candidate stores for CP center mapping
+
+### /fuel-forecast
+- Returns `gbr_forecast`, `gbr_r2`, `gbr_trend`, `ensemble_forecast` alongside existing Ridge results
+- Ensemble = average of Ridge + GBR predictions
 
 ### /upload/validation
 - Compares DB totals vs Excel totals per date per sector
+- Excel totals cached at upload time in `excel_validation_cache` table — reads from DB, no file-on-disk dependency
+- Shows DIFF columns: GEN HR DIFF, FUEL DIFF, TANK DIFF, BO DIFF (DB value - Excel value)
 - Detects issues: time-formatted cells (h:mm), missing SUM formulas
 
 ## Environment Variables
 ```
 OPENROUTER_API_KEY    — Required for AI features (Gemini 3.1 Flash Lite)
-JWT_SECRET            — Required in Docker (raises error if missing)
+JWT_SECRET            — Optional: auto-generates and persists to db/.jwt_secret if not set
 SUPER_ADMIN_USER      — Default: admin
 SUPER_ADMIN_PASS      — Default: admin123
 CORS_ORIGINS          — Default: localhost:3000,5173,8000
 DATA_DIR              — Default: ./db
 ```
+Zero-config install: clone -> docker-compose up -> works (JWT auto-generated, persisted in volume)
 
 ## Docker
 ```bash

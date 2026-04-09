@@ -1,9 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { hbarChart } from '$lib/charts';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	const guides: Record<string, any> = {
 		fuel_used: {
@@ -38,7 +36,7 @@
 		},
 	};
 
-	let { dateFrom = '', dateTo = '', sector = '' }: { dateFrom?: string; dateTo?: string; sector?: string } = $props();
+	let { dateFrom = '', dateTo = '', sector = '', siteType = 'All' }: { dateFrom?: string; dateTo?: string; sector?: string; siteType?: string } = $props();
 
 	let data: Record<string, any[]> = $state({});
 	let loading = $state(true);
@@ -57,6 +55,7 @@
 		if (dateFrom) p.set('date_from', dateFrom);
 		if (dateTo) p.set('date_to', dateTo);
 		if (sector) p.set('sector', sector);
+		if (siteType !== 'All') p.set('site_type', siteType);
 		try {
 			const results = await Promise.all(
 				metrics.map(m => api.get(`/rankings/${m.key}?${p}&limit=15`))
@@ -66,8 +65,7 @@
 		loading = false;
 	}
 
-	onMount(load);
-	$effect(() => { dateFrom; dateTo; sector; load(); });
+	$effect(() => { dateFrom; dateTo; sector; siteType; load(); });
 
 	function colors(vals: number[], metric: string): string[] {
 		if (metric === 'diesel_pct') return vals.map(v => v > 3 ? '#ef4444' : v > 1.5 ? '#f59e0b' : v > 0.9 ? '#eab308' : '#22c55e');
@@ -79,8 +77,6 @@
 		});
 	}
 </script>
-
-<AiInsightPanel type="table" data={{ tab: 'rankings', summary: 'Top sites ranked by diesel cost and diesel percentage of sales' }} title="AI INSIGHT — SITE RANKINGS" />
 
 {#if loading}
 	<p class="text-sm py-4 text-center" style="color: #65655e;">Loading rankings...</p>

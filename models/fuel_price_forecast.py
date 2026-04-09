@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from sklearn.linear_model import Ridge
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from utils.database import get_db
 
@@ -89,9 +90,13 @@ def forecast_fuel_price(sector_id=None, fuel_type="PD", days_ahead=7, degree=2):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Train with regularization to prevent overfitting
+    # Train Ridge with regularization to prevent overfitting
     model = Ridge(alpha=10.0)
     model.fit(X_scaled, y)
+
+    # Train GradientBoosting (captures non-linear patterns)
+    gbr = GradientBoostingRegressor(n_estimators=100, max_depth=3, learning_rate=0.1, random_state=42)
+    gbr.fit(X_scaled, y)
 
     # R-squared
     y_pred_train = model.predict(X_scaled)
@@ -99,6 +104,10 @@ def forecast_fuel_price(sector_id=None, fuel_type="PD", days_ahead=7, degree=2):
     ss_tot = np.sum((y - np.mean(y)) ** 2)
     r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
     result["r_squared"] = round(r_squared, 3)
+
+    # GBR R-squared
+    gbr_r2 = gbr.score(X_scaled, y)
+    result["gbr_r2"] = round(float(gbr_r2), 4)
 
     # Residual std for confidence interval
     residual_std = np.std(y - y_pred_train)
@@ -110,15 +119,24 @@ def forecast_fuel_price(sector_id=None, fuel_type="PD", days_ahead=7, degree=2):
     last_prices = df["price"].tolist()
 
     forecasts = []
+    gbr_forecasts = []
+    ensemble_forecasts = []
     current_lag_1 = last_price
     current_lag_3 = np.mean(last_prices[-3:]) if len(last_prices) >= 3 else last_price
     current_rm3 = np.mean(last_prices[-3:]) if len(last_prices) >= 3 else last_price
+
+    # Separate rolling state for GBR
+    gbr_lag_1 = last_price
+    gbr_lag_3 = current_lag_3
+    gbr_rm3 = current_rm3
+    gbr_last_prices = last_prices.copy()
 
     for i in range(1, days_ahead + 1):
         future_date = last_date + timedelta(days=i)
         ordinal = last_ordinal + i
         dow = future_date.dayofweek
 
+        # Ridge prediction
         features = [ordinal, dow, current_lag_1, current_rm3]
         if "lag_3" in feature_cols:
             features.append(current_lag_3)
@@ -134,14 +152,46 @@ def forecast_fuel_price(sector_id=None, fuel_type="PD", days_ahead=7, degree=2):
             "upper_bound": round(pred + 1.96 * residual_std, 0),
         })
 
-        # Update rolling values for next iteration
+        # GBR prediction
+        gbr_features = [ordinal, dow, gbr_lag_1, gbr_rm3]
+        if "lag_3" in feature_cols:
+            gbr_features.append(gbr_lag_3)
+
+        X_future_gbr = scaler.transform([gbr_features])
+        gbr_pred = gbr.predict(X_future_gbr)[0]
+        gbr_pred = max(gbr_pred, 0)
+
+        date_str = future_date.strftime("%Y-%m-%d")
+        gbr_forecasts.append({
+            "date": date_str,
+            "predicted_price": round(float(gbr_pred), 1),
+        })
+
+        # Ensemble prediction (average of Ridge + GBR)
+        ensemble_pred = (pred + gbr_pred) / 2
+        ensemble_forecasts.append({
+            "date": date_str,
+            "predicted_price": round(float(ensemble_pred), 1),
+        })
+
+        # Update Ridge rolling values
         current_lag_1 = pred
         recent = last_prices[-2:] + [pred]
         current_lag_3 = np.mean(recent)
         current_rm3 = np.mean(recent[-3:])
         last_prices.append(pred)
 
+        # Update GBR rolling values
+        gbr_lag_1 = gbr_pred
+        gbr_recent = gbr_last_prices[-2:] + [gbr_pred]
+        gbr_lag_3 = np.mean(gbr_recent)
+        gbr_rm3 = np.mean(gbr_recent[-3:])
+        gbr_last_prices.append(gbr_pred)
+
     result["forecast"] = pd.DataFrame(forecasts)
+    result["gbr_forecast"] = gbr_forecasts
+    result["gbr_trend"] = "up" if len(gbr_forecasts) > 0 and gbr_forecasts[-1]["predicted_price"] > gbr_forecasts[0]["predicted_price"] else "down"
+    result["ensemble_forecast"] = ensemble_forecasts
 
     # Trend
     if len(df) >= 3:

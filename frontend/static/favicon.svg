@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="16" fill="#383832"/>
+  <text x="64" y="48" text-anchor="middle" font-family="Arial Black, sans-serif" font-weight="900" font-size="32" fill="#feffd6">BCP</text>
+  <rect x="20" y="60" width="88" height="3" fill="#00fc40"/>
+  <text x="64" y="90" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="16" fill="#ff9d00">COMMAND</text>
+  <text x="64" y="110" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="16" fill="#feffd6">CENTER</text>
+</svg>

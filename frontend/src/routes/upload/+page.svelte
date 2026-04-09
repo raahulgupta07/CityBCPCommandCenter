@@ -2,22 +2,36 @@
 	import { onMount } from 'svelte';
 	import { api, API_BASE } from '$lib/api';
 
-	let activeTab = $state('daily');
+	let activeTab = $state('upload');
 	let loading = $state(true);
 	let message = $state('');
 	let messageType = $state<'success'|'error'>('success');
 	let lastSync: Record<string, any> = $state({});
-	let uploadSection = $state('daily');
 	let dragover = $state(false);
 
-	interface QueueItem { file: File; filename: string; size: number; status: 'VALIDATING'|'VALIDATED'|'INVALID'|'WRONG_TAB'|'UPLOADING'|'IMPORTED'|'REJECTED'; type?: string; sheets?: string[]; rows?: number; error?: string; tab?: string; validation?: any[] }
-	let queue: QueueItem[] = $state([]);
 	let submitting = $state(false);
-	let uploadProgress = $state({ current: 0, total: 0, filename: '', startTime: 0 });
-	let elapsed = $state(0);
-	let elapsedTimer: any = null;
-	let validateProgress: Record<number, number> = $state({}); // idx -> 0-100 percent
-	let uploadFileProgress = $state(0); // 0-100 for current uploading file
+
+	// ─── FILE_DEFS: static list of all accepted file types ───
+	const FILE_DEFS = [
+		{ key: 'blackout_cfc', file: 'Blackout Hr_ CFC.xlsx', type: 'blackout_cfc', desc: 'CFC generators, fuel, tank, blackout hours', freq: 'DAILY', icon: 'bakery_dining', syncKey: 'blackout_cfc' },
+		{ key: 'blackout_cmhl', file: 'Blackout Hr_ CMHL.xlsx', type: 'blackout_cmhl', desc: 'CMHL 31 stores, gen run hr, diesel used', freq: 'DAILY', icon: 'storefront', syncKey: 'blackout_cmhl' },
+		{ key: 'blackout_cp', file: 'Blackout Hr_ CP.xlsx', type: 'blackout_cp', desc: 'CP 25 sites, includes blackout hours', freq: 'DAILY', icon: 'apartment', syncKey: 'blackout_cp' },
+		{ key: 'blackout_pg', file: 'Blackout Hr_ PG.xlsx', type: 'blackout_pg', desc: 'PG sector distribution sites', freq: 'DAILY', icon: 'local_shipping', syncKey: 'blackout_pg' },
+		{ key: 'fuel_price', file: 'Daily Fuel Price.xlsx', type: 'fuel_price', desc: 'Diesel prices from Denko/Moon Sun', freq: 'DAILY', icon: 'local_gas_station', syncKey: 'fuel_price' },
+		{ key: 'combo_sales', file: 'CMHL_DAILY_SALES.xlsx', type: 'combo_sales', desc: 'Recent daily+hourly sales, store master', freq: 'DAILY', icon: 'point_of_sale', syncKey: 'combo_sales' },
+		{ key: 'diesel_expense_ly', file: 'Daily Normal Diesel Expense.xlsx', type: 'diesel_expense_ly', desc: 'LY diesel expense baseline', freq: 'REFERENCE', icon: 'history', syncKey: 'diesel_expense_ly' },
+		{ key: 'store_exp_center', file: 'Store Exp % of Center.xlsx', type: 'store_allocation', desc: 'Store expense % allocation to CP centers', freq: 'REFERENCE', icon: 'account_balance', syncKey: 'store_allocation' },
+	];
+
+	interface FileState { status: string; progress: number; rows?: number; error?: string; queueFile?: File; validation?: any[] }
+	let fileStates: Record<string, FileState> = $state({});
+
+	const readyCount = $derived(Object.values(fileStates).filter(s => s.status === 'READY').length);
+	const uploadingCount = $derived(Object.values(fileStates).filter(s => s.status === 'UPLOADING').length);
+	const validatingCount = $derived(Object.values(fileStates).filter(s => s.status === 'VALIDATING').length);
+	const importedCount = $derived(Object.values(fileStates).filter(s => s.status === 'IMPORTED').length);
+	const errorCount = $derived(Object.values(fileStates).filter(s => s.status === 'ERROR').length);
+	const hasActiveStates = $derived(Object.keys(fileStates).length > 0);
 
 	// Other tabs
 	let summaryData: any = $state(null);
@@ -47,11 +61,11 @@
 		{ key: 'diesel_expense_ly', label: 'LY_EXP', icon: 'history' },
 	];
 	const tabs = [
-		{ id: 'daily', label: 'DAILY_DATA' }, { id: 'reference', label: 'REFERENCE_DATA' },
+		{ id: 'upload', label: 'UPLOAD' },
 		{ id: 'validation', label: 'DATA_QUALITY' },
 		{ id: 'summary', label: 'STORE_SUMMARY' }, { id: 'raw', label: 'RAW_DATA' },
 		{ id: 'model', label: 'DATA_MODEL' }, { id: 'cleaning', label: 'DATA_CLEANING' },
-		{ id: 'history', label: 'HISTORY' }, { id: 'danger', label: 'DANGER_ZONE' },
+		{ id: 'history', label: 'HISTORY' },
 	];
 
 	let validationData: any = $state(null);
@@ -160,22 +174,17 @@
 		for (let i = 0; i < files.length; i++) {
 			const file = files[i];
 			if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
-				queue = [...queue, { file, filename: file.name, size: file.size, status: 'INVALID', error: 'NOT_XLSX_FORMAT' }];
+				const tempKey = `temp_${Date.now()}_${i}`;
+				fileStates = { ...fileStates, [tempKey]: { status: 'ERROR', progress: 0, error: 'NOT_XLSX_FORMAT' } };
 				continue;
 			}
-			const idx = queue.length;
-			queue = [...queue, { file, filename: file.name, size: file.size, status: 'VALIDATING' }];
-			validateFile(file, idx);
+			const tempKey = `temp_${Date.now()}_${i}`;
+			fileStates = { ...fileStates, [tempKey]: { status: 'VALIDATING', progress: 0 } };
+			validateAndMatch(file, tempKey);
 		}
 	}
 
-	const REF_TYPES = ['sales_reference', 'diesel_expense_ly', 'hourly_reference'];
-	const DAILY_TYPES = ['fuel_price', 'combo_sales', 'daily_sales'];
-
-	function isRefFile(t: string) { return REF_TYPES.includes(t) || t.startsWith('diesel_expense'); }
-	function isDailyFile(t: string) { return t.startsWith('blackout') || DAILY_TYPES.includes(t); }
-
-	async function validateFile(file: File, idx: number) {
+	async function validateAndMatch(file: File, tempKey: string) {
 		try {
 			const formData = new FormData();
 			formData.append('file', file);
@@ -188,7 +197,8 @@
 
 				xhr.upload.onprogress = (e) => {
 					if (e.lengthComputable) {
-						validateProgress = { ...validateProgress, [idx]: Math.round((e.loaded / e.total) * 100) };
+						const pct = Math.round((e.loaded / e.total) * 100);
+						fileStates = { ...fileStates, [tempKey]: { ...fileStates[tempKey], progress: pct } };
 					}
 				};
 
@@ -204,59 +214,49 @@
 				xhr.send(formData);
 			});
 
-			delete validateProgress[idx];
-			validateProgress = { ...validateProgress };
-
-			const dt = result.type || '';
-			const currentTab = uploadSection;
-
-			// Tab-aware rejection: reference files on daily tab and vice versa
-			if (currentTab === 'daily' && isRefFile(dt)) {
-				queue = queue.map((q, i) => i === idx ? { ...q, status: 'WRONG_TAB' as const, type: dt, sheets: result.sheets, rows: result.rows, error: 'REFERENCE_FILE_ON_DAILY_TAB — Use REFERENCE_DATA tab', tab: currentTab } : q);
-			} else if (currentTab === 'reference' && isDailyFile(dt)) {
-				queue = queue.map((q, i) => i === idx ? { ...q, status: 'WRONG_TAB' as const, type: dt, sheets: result.sheets, rows: result.rows, error: 'DAILY_FILE_ON_REFERENCE_TAB — Use DAILY_DATA tab', tab: currentTab } : q);
+			const detectedType = result.type || '';
+			// Find first FILE_DEF of this type that isn't already claimed
+			const matched = FILE_DEFS.find(fd => fd.type === detectedType && !fileStates[fd.key]);
+			// Fallback: match any FILE_DEF of this type (will overwrite)
+			const fallback = matched || FILE_DEFS.find(fd => fd.type === detectedType);
+			if (fallback) {
+				const newStates = { ...fileStates };
+				delete newStates[tempKey];
+				newStates[fallback.key] = { status: 'READY', progress: 0, rows: result.rows, queueFile: file, detectedType };
+				fileStates = newStates;
 			} else {
-				queue = queue.map((q, i) => i === idx ? { ...q, status: 'VALIDATED' as const, type: dt, sheets: result.sheets, rows: result.rows, tab: currentTab } : q);
+				fileStates = { ...fileStates, [tempKey]: { status: 'ERROR', progress: 0, error: `Unknown type: ${detectedType}` } };
 			}
 		} catch (e: any) {
-			queue = queue.map((q, i) => i === idx ? { ...q, status: 'INVALID' as const, error: e.message } : q);
+			fileStates = { ...fileStates, [tempKey]: { status: 'ERROR', progress: 0, error: e.message } };
 		}
 	}
 
 	// ─── Step 2: Submit upload (user clicks button) ────────
 	async function submitUpload() {
-		const currentTab = activeTab;
-		const validItems = queue.filter(q => q.status === 'VALIDATED' && q.tab === currentTab);
-		if (validItems.length === 0) return flash('NO_VALID_FILES_TO_UPLOAD', 'error');
+		const readyKeys = Object.entries(fileStates).filter(([_, s]) => s.status === 'READY' && s.queueFile);
+		if (readyKeys.length === 0) return flash('NO_VALID_FILES_TO_UPLOAD', 'error');
 		submitting = true;
 
-		// Start timer
-		uploadProgress = { current: 0, total: validItems.length, filename: '', startTime: Date.now() };
-		elapsed = 0;
-		elapsedTimer = setInterval(() => { elapsed = Math.floor((Date.now() - uploadProgress.startTime) / 1000); }, 1000);
-
-		let fileNum = 0;
-		for (let i = 0; i < queue.length; i++) {
-			if (queue[i].status !== 'VALIDATED' || queue[i].tab !== currentTab) continue;
-			fileNum++;
-			uploadProgress = { ...uploadProgress, current: fileNum, filename: queue[i].filename };
-			queue = queue.map((q, j) => j === i ? { ...q, status: 'UPLOADING' as const } : q);
+		for (const [key, state] of readyKeys) {
+			fileStates = { ...fileStates, [key]: { ...state, status: 'UPLOADING', progress: 0 } };
 
 			try {
 				const formData = new FormData();
-				formData.append('file', queue[i].file);
+				formData.append('file', state.queueFile!);
 				const token = localStorage.getItem('token');
-				uploadFileProgress = 0;
 
 				const result = await new Promise<any>((resolve, reject) => {
 					const xhr = new XMLHttpRequest();
-					xhr.open('POST', `${API_BASE}/upload`);
+					const typeHint = state.detectedType ? `?file_type=${encodeURIComponent(state.detectedType)}` : '';
+					xhr.open('POST', `${API_BASE}/upload${typeHint}`);
 					xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-					xhr.timeout = 600000; // 10 min timeout
+					xhr.timeout = 600000;
 
 					xhr.upload.onprogress = (e) => {
 						if (e.lengthComputable) {
-							uploadFileProgress = Math.round((e.loaded / e.total) * 100);
+							const pct = Math.round((e.loaded / e.total) * 100);
+							fileStates = { ...fileStates, [key]: { ...fileStates[key], progress: pct } };
 						}
 					};
 
@@ -272,26 +272,29 @@
 					xhr.ontimeout = () => reject(new Error('Upload timed out'));
 					xhr.send(formData);
 				});
-				queue = queue.map((q, j) => j === i ? { ...q, status: 'IMPORTED' as const, type: result.type, rows: result.records, validation: result.validation || [] } : q);
+				fileStates = { ...fileStates, [key]: { ...fileStates[key], status: 'IMPORTED', progress: 100, rows: result.records, validation: result.validation || [] } };
 			} catch (e: any) {
-				queue = queue.map((q, j) => j === i ? { ...q, status: 'REJECTED' as const, error: e.message } : q);
+				fileStates = { ...fileStates, [key]: { ...fileStates[key], status: 'ERROR', progress: 0, error: e.message } };
 			}
 		}
 
-		clearInterval(elapsedTimer);
-		elapsedTimer = null;
 		try { lastSync = await api.get('/upload/last-sync'); } catch {}
 		submitting = false;
-		const imported = queue.filter(q => q.status === 'IMPORTED').length;
-		const rejected = queue.filter(q => q.status === 'REJECTED').length;
-		flash(`COMPLETE: ${imported} IMPORTED, ${rejected} REJECTED`);
+		flash(`COMPLETE: ${importedCount} IMPORTED, ${errorCount} ERRORS`);
 	}
 
 	function onDrop(e: DragEvent) { e.preventDefault(); dragover = false; if (e.dataTransfer?.files) handleFiles(e.dataTransfer.files); }
-	function onFileInput(e: Event) { const input = e.target as HTMLInputElement; if (input.files) handleFiles(input.files); input.value = ''; }
-	function clearQueue() { queue = queue.filter(q => q.tab !== activeTab); }
-	function removeFromQueue(idx: number) { queue = queue.filter((_, i) => i !== idx); }
-	function removeByFilename(filename: string, tab: string) { queue = queue.filter(q => !(q.filename === filename && q.tab === tab)); }
+	function onFileInput(e: Event) {
+		const input = e.target as HTMLInputElement;
+		if (input.files && input.files.length > 0) {
+			const files = Array.from(input.files);
+			const dt = new DataTransfer();
+			files.forEach(f => dt.items.add(f));
+			input.value = '';
+			handleFiles(dt.files);
+		}
+	}
+	function clearFileStates() { fileStates = {}; }
 
 	async function clearData(target: string) {
 		try { await api.post(`/upload/clear/${target}`, {}); flash(`PURGED: ${target.toUpperCase()}`); lastSync = await api.get('/upload/last-sync'); }
@@ -300,9 +303,6 @@
 	async function loadSummary() { try { const p = new URLSearchParams({ metric: summaryMetric }); if (summarySector) p.set('sector', summarySector); summaryData = await api.get(`/upload/store-summary?${p}`); } catch (e: any) { flash(e.message, 'error'); } }
 	async function loadRaw() { try { const p = new URLSearchParams(); if (rawSearch) p.set('search', rawSearch); rawData = await api.get(`/upload/raw/${rawTable}?${p}`); } catch (e: any) { flash(e.message, 'error'); } }
 	async function loadHistory() { try { history = await api.get('/upload/history'); } catch {} }
-
-	const statusIcon: Record<string, string> = { VALIDATING: '🔄', VALIDATED: '✅', INVALID: '❌', WRONG_TAB: '⚠️', UPLOADING: '⏳', IMPORTED: '✅', REJECTED: '❌' };
-	const statusColor: Record<string, string> = { VALIDATING: '#006f7c', VALIDATED: '#007518', INVALID: '#be2d06', WRONG_TAB: '#ff9d00', UPLOADING: '#ff9d00', IMPORTED: '#007518', REJECTED: '#be2d06' };
 
 	function fmtSize(bytes: number): string {
 		if (!bytes) return '—';
@@ -313,17 +313,20 @@
 
 
 	function freshness(dateStr: string): { color: string; label: string } {
-		if (!dateStr) return { color: '#65655e', label: 'NEVER' };
-		const days = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+		if (!dateStr || dateStr === 'seeded') return { color: '#65655e', label: 'NEVER' };
+		// DB stores UTC — append Z if no timezone info
+		const ts = dateStr.includes('T') || dateStr.includes('Z') || dateStr.includes('+') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
+		const diffMs = Date.now() - new Date(ts).getTime();
+		const hours = Math.floor(diffMs / 3600000);
+		if (hours < 0) return { color: '#007518', label: 'now' };
+		if (hours < 1) return { color: '#007518', label: 'now' };
+		if (hours < 24) return { color: '#007518', label: `${hours}h ago` };
+		const days = Math.floor(hours / 24);
 		if (days <= 2) return { color: '#007518', label: `${days}d ago` };
 		if (days <= 7) return { color: '#ff9d00', label: `${days}d ago` };
 		return { color: '#be2d06', label: `${days}d ago` };
 	}
 
-	const tabQueue = $derived(queue.filter(q => q.tab === activeTab || (!q.tab && activeTab === 'daily')));
-	const hasValidated = $derived(tabQueue.some(q => q.status === 'VALIDATED'));
-	const hasAny = $derived(tabQueue.length > 0);
-	const allDone = $derived(tabQueue.length > 0 && tabQueue.every(q => ['IMPORTED', 'REJECTED', 'INVALID', 'WRONG_TAB'].includes(q.status)));
 </script>
 
 {#if message}
@@ -349,276 +352,218 @@
 	<!-- ═══════════════════════════════════════════════════════ -->
 	<!-- UPLOAD FILES -->
 	<!-- ═══════════════════════════════════════════════════════ -->
-	{#if activeTab === 'daily' || activeTab === 'reference'}
-
-		{@const isDaily = activeTab === 'daily'}
-		{@const accentColor = isDaily ? '#007518' : '#006f7c'}
+	{#if activeTab === 'upload'}
 
 		<!-- Section Header -->
-		<div class="p-4" style="background: {accentColor}; color: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+		<div class="p-4" style="background: #383832; color: #feffd6; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
 			<div class="flex justify-between items-center">
 				<div>
-					<h2 class="text-lg font-black uppercase">{isDaily ? 'DAILY_DATA' : 'REFERENCE_DATA'}</h2>
-					<p class="text-[10px] font-bold opacity-80 mt-0.5">{isDaily ? 'Upload every day — upserts by date+site, overwrites previous' : 'Upload once — historical baseline, batch insert for large files'}</p>
+					<h2 class="text-lg font-black uppercase">UPLOAD DATA</h2>
+					<p class="text-[10px] font-bold opacity-80 mt-0.5">Drop all 8 files together — system auto-classifies by sheet names</p>
 				</div>
+				{#if hasActiveStates}
+					<button onclick={clearFileStates} class="px-3 py-1 text-[10px] font-bold uppercase" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.4);">CLEAR_QUEUE</button>
+				{/if}
 			</div>
 		</div>
 
-		<!-- Accepted Files Table -->
+		<!-- Compact Upload Bar -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="flex items-center gap-3 p-3 cursor-pointer transition-all"
+			style="background: {dragover ? '#ebe8dd' : 'white'}; border: 2px dashed {dragover ? '#007518' : '#383832'};"
+			ondragover={(e) => { e.preventDefault(); dragover = true; }}
+			ondragleave={() => dragover = false}
+			ondrop={(e) => { onDrop(e); }}>
+			<span class="material-symbols-outlined text-xl" style="color: #007518;">cloud_upload</span>
+			<span class="text-xs font-bold uppercase" style="color: #65655e;">DROP FILES HERE OR</span>
+			<button onclick={() => { document.getElementById('file-input-upload')?.click(); }}
+				class="px-3 py-1.5 text-xs font-black uppercase active:translate-x-[1px] active:translate-y-[1px]"
+				style="background: #00fc40; color: #383832; border: 2px solid #383832;">SELECT FILES</button>
+			<input id="file-input-upload" type="file" accept=".xlsx,.xls" multiple class="hidden" onchange={(e) => { onFileInput(e); }} />
+			{#if validatingCount > 0}
+				<span class="px-2 py-0.5 text-[10px] font-black uppercase animate-pulse" style="background: #ff9d00; color: white;">{validatingCount} VALIDATING...</span>
+			{/if}
+		</div>
+
+		<!-- DATA_FILES Unified Table -->
 		<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
-			<div class="px-4 py-2 font-bold uppercase text-sm" style="background: #383832; color: #feffd6;">ACCEPTED_FILES</div>
-			<div style="background: white;">
-				<table class="w-full text-xs" style="border-collapse: collapse;">
+			<div class="px-4 py-2 font-bold uppercase text-sm" style="background: #383832; color: #feffd6;">DATA_FILES</div>
+			<div style="background: white; overflow-x: auto;">
+				<table class="w-full text-xs" style="border-collapse: collapse; table-layout: fixed;">
 					<thead style="background: #ebe8dd;">
 						<tr>
-							<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FILE</th>
-							<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">TYPE</th>
-							<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">DESCRIPTION</th>
-							<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FREQUENCY</th>
-							<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">LAST_UPLOAD</th>
-							<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">ROWS</th>
+							<th style="border-bottom: 2px solid #383832; width: 30px;"></th>
+							<th class="px-2 py-2 text-left font-black uppercase text-[10px]" style="border-bottom: 2px solid #383832;">FILE</th>
+							<th class="px-2 py-2 text-left font-black uppercase text-[10px]" style="border-bottom: 2px solid #383832; width: 110px;">TYPE</th>
+							<th class="px-2 py-2 text-left font-black uppercase text-[10px]" style="border-bottom: 2px solid #383832; width: 130px;">LAST_UPLOAD</th>
+							<th class="px-2 py-2 text-right font-black uppercase text-[10px]" style="border-bottom: 2px solid #383832; width: 55px;">ROWS</th>
+							<th class="px-2 py-2 text-center font-black uppercase text-[10px]" style="border-bottom: 2px solid #383832; width: 75px;">STATUS</th>
+							<th class="px-2 py-2 text-center font-black uppercase text-[10px]" style="border-bottom: 2px solid #383832; width: 70px;">PROGRESS</th>
 						</tr>
 					</thead>
 					<tbody>
-						{#if isDaily}
-							{#each [
-								{ file: 'Blackout Hr_ CFC.xlsx', type: 'blackout_cfc', desc: 'CFC generators, fuel, tank, blackout hours', freq: 'DAILY', icon: 'bakery_dining', syncKey: 'blackout_cfc' },
-								{ file: 'Blackout Hr_ CMHL.xlsx', type: 'blackout_cmhl', desc: 'CMHL 31 stores, gen run hr, diesel used', freq: 'DAILY', icon: 'storefront', syncKey: 'blackout_cmhl' },
-								{ file: 'Blackout Hr_ CP.xlsx', type: 'blackout_cp', desc: 'CP 25 sites, includes blackout hours', freq: 'DAILY', icon: 'apartment', syncKey: 'blackout_cp' },
-								{ file: 'Blackout Hr_ PG.xlsx', type: 'blackout_pg', desc: 'PG sector distribution sites', freq: 'DAILY', icon: 'local_shipping', syncKey: 'blackout_pg' },
-								{ file: 'Daily Fuel Price.xlsx', type: 'fuel_price', desc: 'Diesel prices from Denko/Moon Sun', freq: 'DAILY', icon: 'local_gas_station', syncKey: 'fuel_price' },
-								{ file: 'CMHL_DAILY_SALES.xlsx', type: 'combo_sales', desc: 'Recent daily+hourly sales, store master', freq: 'DAILY', icon: 'point_of_sale', syncKey: 'combo_sales' },
-							] as f, i}
-								{@const fresh = freshness(lastSync[f.syncKey]?.synced_at)}
-								<tr style="border-bottom: 1px solid rgba(56,56,50,0.15); {i % 2 ? 'background: #fcf9ef;' : ''}">
-									<td class="px-4 py-2.5 font-bold flex items-center gap-2" style="color: #383832;">
-										<span class="material-symbols-outlined text-sm" style="color: {accentColor};">{f.icon}</span> {f.file}
-									</td>
-									<td class="px-4 py-2.5 font-mono" style="color: {accentColor};">{f.type}</td>
-									<td class="px-4 py-2.5" style="color: #65655e;">{f.desc}</td>
-									<td class="px-4 py-2.5"><span class="px-2 py-0.5 text-[9px] font-bold" style="background: {accentColor}; color: white;">{f.freq}</span></td>
-									<td class="px-4 py-2.5 text-[10px] font-mono">
-										<span style="color: {lastSync[f.syncKey] ? '#383832' : '#be2d06'};">{lastSync[f.syncKey]?.synced_at || 'NEVER'}</span>
-										<span class="ml-1.5 px-1.5 py-0.5 text-[9px] font-black" style="background: {fresh.color}; color: white;">{fresh.label}</span>
-									</td>
-									<td class="px-4 py-2.5 text-[10px] font-bold" style="color: #383832;">
-										{lastSync[f.syncKey]?.rows?.toLocaleString() || '—'}
-									</td>
-								</tr>
-							{/each}
-						{:else}
-							{#each [
-								{ file: 'DailySales_1YearData.xlsx', type: 'sales_reference', desc: '126K+ daily sales + 570K hourly — 1 year history', freq: 'ONCE', icon: 'database', syncKey: 'combo_sales' },
-								{ file: 'Daily Normal Diesel Expense.xlsx', type: 'diesel_expense_ly', desc: 'Last-year baseline expense per store', freq: 'ONCE', icon: 'history', syncKey: 'diesel_expense_ly' },
-								{ file: 'Store Exp Percentage.xlsx', type: 'diesel_expense_ly', desc: 'Store-to-center expense mapping', freq: 'ONCE', icon: 'store', syncKey: 'diesel_expense_ly' },
-							] as f, i}
-								{@const fresh = freshness(lastSync[f.syncKey]?.synced_at)}
-								<tr style="border-bottom: 1px solid rgba(56,56,50,0.15); {i % 2 ? 'background: #fcf9ef;' : ''}">
-									<td class="px-4 py-2.5 font-bold flex items-center gap-2" style="color: #383832;">
-										<span class="material-symbols-outlined text-sm" style="color: {accentColor};">{f.icon}</span> {f.file}
-									</td>
-									<td class="px-4 py-2.5 font-mono" style="color: {accentColor};">{f.type}</td>
-									<td class="px-4 py-2.5" style="color: #65655e;">{f.desc}</td>
-									<td class="px-4 py-2.5"><span class="px-2 py-0.5 text-[9px] font-bold" style="background: {accentColor}; color: white;">{f.freq}</span></td>
-									<td class="px-4 py-2.5 text-[10px] font-mono">
-										<span style="color: {lastSync[f.syncKey] ? '#383832' : '#be2d06'};">{lastSync[f.syncKey]?.synced_at || 'NEVER'}</span>
-										<span class="ml-1.5 px-1.5 py-0.5 text-[9px] font-black" style="background: {fresh.color}; color: white;">{fresh.label}</span>
-									</td>
-									<td class="px-4 py-2.5 text-[10px] font-bold" style="color: #383832;">
-										{lastSync[f.syncKey]?.rows?.toLocaleString() || '—'}
-									</td>
-								</tr>
-							{/each}
-						{/if}
+						{#each FILE_DEFS as fd, i}
+							{@const sync = lastSync[fd.syncKey]}
+							{@const state = fileStates[fd.key]}
+							{@const fresh = freshness(sync?.synced_at)}
+							<tr style="border-bottom: 1px solid rgba(56,56,50,0.15); {i % 2 ? 'background: #fcf9ef;' : ''} {state?.status === 'READY' ? 'outline: 2px solid #006f7c; outline-offset: -2px;' : state?.status === 'IMPORTED' ? 'outline: 2px solid #007518; outline-offset: -2px;' : ''}">
+								<td class="px-1 py-2 text-center">
+									<span class="material-symbols-outlined text-sm" style="color: #383832;">{fd.icon}</span>
+								</td>
+								<td class="px-2 py-2 font-bold text-[11px]" style="color: #383832; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{fd.file}</td>
+								<td class="px-2 py-2 font-mono text-[10px]" style="color: #65655e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{fd.type}</td>
+								<td class="px-2 py-2">
+									<div class="text-[10px] font-mono" style="color: {sync ? '#383832' : '#be2d06'};">{sync?.synced_at?.slice(0, 16) || 'NEVER'}</div>
+									<span class="px-1 py-0.5 text-[8px] font-black" style="background: {fresh.color}; color: white;">{fresh.label}</span>
+								</td>
+								<td class="px-2 py-2 text-[10px] font-bold text-right" style="color: #383832;">
+									{state?.rows?.toLocaleString() || sync?.rows?.toLocaleString() || '—'}
+								</td>
+								<td class="px-1 py-2 text-center">
+									{#if state?.status === 'VALIDATING'}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase animate-pulse" style="background: #ff9d00; color: white;">CHECKING</span>
+									{:else if state?.status === 'READY'}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase" style="background: #006f7c; color: white;">READY</span>
+									{:else if state?.status === 'UPLOADING'}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase animate-pulse" style="background: #006f7c; color: white;">UPLOAD</span>
+									{:else if state?.status === 'IMPORTED'}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase" style="background: #007518; color: white;">DONE</span>
+									{:else if state?.status === 'ERROR'}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase" style="background: #be2d06; color: white;" title={state.error || ''}>ERROR</span>
+									{:else if sync}
+										{@const days = sync.synced_at ? Math.floor((Date.now() - new Date(sync.synced_at).getTime()) / 86400000) : -1}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase" style="background: {days <= 0 ? '#007518' : days <= 3 ? '#ff9d00' : '#be2d06'}; color: white;">
+											{days <= 0 ? 'SYNCED' : days <= 3 ? 'STALE' : 'OLD'}
+										</span>
+									{:else}
+										<span class="px-1.5 py-0.5 text-[9px] font-black uppercase" style="background: #383832; color: #be2d06;">NEVER</span>
+									{/if}
+								</td>
+								<td class="px-2 py-2">
+									{#if state?.status === 'UPLOADING' || state?.status === 'VALIDATING'}
+										<div class="h-1.5 overflow-hidden" style="background: #ebe8dd;">
+											<div class="h-full transition-all" style="background: {state.status === 'UPLOADING' ? '#007518' : '#ff9d00'}; width: {Math.min(state.progress, 100)}%;"></div>
+										</div>
+									{:else if state?.status === 'IMPORTED'}
+										<div class="h-1.5" style="background: #007518;"></div>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+
+						<!-- Summary + Upload Button Row -->
+						<tr style="background: #383832; color: #feffd6;">
+							<td colspan="7" class="px-4 py-3">
+								<div class="flex justify-between items-center">
+									<div class="text-[10px] font-bold uppercase tracking-wider">
+										{#if hasActiveStates}
+											{readyCount} READY
+											{#if uploadingCount > 0} · {uploadingCount} UPLOADING{/if}
+											{#if importedCount > 0} · {importedCount} IMPORTED{/if}
+											{#if errorCount > 0} · <span style="color: #f95630;">{errorCount} ERROR</span>{/if}
+											{#if validatingCount > 0} · {validatingCount} VALIDATING{/if}
+										{:else}
+											DROP_OR_SELECT_FILES_TO_BEGIN
+										{/if}
+									</div>
+									{#if readyCount > 0 && !submitting}
+										<button onclick={submitUpload}
+											class="px-6 py-2 font-black uppercase text-sm active:translate-x-[2px] active:translate-y-[2px]"
+											style="background: #00fc40; color: #383832; border: 2px solid #feffd6; box-shadow: 3px 3px 0px 0px #feffd6;">
+											UPLOAD ALL ({readyCount} FILES)
+										</button>
+									{:else if submitting}
+										<div class="px-6 py-2 font-black uppercase text-sm animate-pulse" style="background: #ff9d00; color: #383832; border: 2px solid #feffd6;">
+											UPLOADING...
+										</div>
+									{/if}
+								</div>
+							</td>
+						</tr>
 					</tbody>
 				</table>
 			</div>
 		</div>
 
-		<!-- Drop Zone -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="p-10 text-center cursor-pointer transition-all"
-			style="background: {dragover ? '#ebe8dd' : 'white'}; border: 3px dashed {dragover ? accentColor : '#383832'};"
-			ondragover={(e) => { e.preventDefault(); uploadSection = activeTab; dragover = true; }}
-			ondragleave={() => dragover = false}
-			ondrop={(e) => { uploadSection = activeTab; onDrop(e); }}
-			onclick={() => { uploadSection = activeTab; document.getElementById('file-input-' + activeTab)?.click(); }}>
-			<span class="material-symbols-outlined text-4xl" style="color: {accentColor};">cloud_upload</span>
-			<p class="text-sm font-black uppercase mt-2" style="color: #383832;">DROP_{isDaily ? 'DAILY' : 'REFERENCE'}_FILES_HERE</p>
-			<p class="text-[10px] font-bold uppercase mt-1" style="color: #65655e;">
-				{isDaily ? 'Blackout, fuel price, recent sales — overwrites by date+site' : '1-year sales, LY expense — batch insert, upload once'}
-			</p>
-			<input id="file-input-{activeTab}" type="file" accept=".xlsx,.xls" multiple class="hidden" onchange={(e) => { uploadSection = activeTab; onFileInput(e); }} />
-		</div>
-
-		<!-- Processing Queue -->
-		{#if hasAny}
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
-				<div class="px-4 py-2 flex justify-between items-center" style="background: #383832; color: #feffd6;">
-					<span class="font-bold uppercase tracking-widest text-sm">VALIDATION_QUEUE — {tabQueue.length} FILE{tabQueue.length > 1 ? 'S' : ''}</span>
-					<button onclick={clearQueue} class="text-[10px] font-bold uppercase underline decoration-2 underline-offset-4" style="color: #fe97b9;">CLEAR</button>
+		<!-- Unmatched Files (separate table) -->
+		{@const tempFiles = Object.entries(fileStates).filter(([k]) => k.startsWith('temp_'))}
+		{#if tempFiles.length > 0}
+			<div class="mt-3" style="border: 2px solid #be2d06; box-shadow: 4px 4px 0px 0px #be2d06;">
+				<div class="px-4 py-2" style="background: #be2d06; color: white;">
+					<span class="font-black uppercase text-xs">UNMATCHED_FILES — {tempFiles.length}</span>
 				</div>
-				<div style="background: white;">
-					<table class="w-full text-xs font-mono" style="border-collapse: collapse;">
-						<thead style="background: #ebe8dd;">
-							<tr>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">FILE</th>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">DETECTED_TYPE</th>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">CATEGORY</th>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">ROWS</th>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">SIZE</th>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;">STATUS</th>
-								<th class="px-4 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #383832;"></th>
+				<table class="w-full text-xs" style="border-collapse: collapse;">
+					<thead style="background: #fff0f0;">
+						<tr>
+							<th class="px-3 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #be2d06; width: 28px;"></th>
+							<th class="px-3 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #be2d06;">FILE</th>
+							<th class="px-3 py-2 text-left font-black uppercase" style="border-bottom: 2px solid #be2d06;">ERROR</th>
+							<th class="px-3 py-2 text-center font-black uppercase" style="border-bottom: 2px solid #be2d06; width: 80px;">STATUS</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each tempFiles as [tempKey, state], i}
+							<tr style="border-bottom: 1px solid rgba(190,45,6,0.2); background: {i % 2 ? '#fff5f5' : '#fff0f0'};">
+								<td class="px-3 py-2 text-center"><span class="material-symbols-outlined text-sm" style="color: #be2d06;">error</span></td>
+								<td class="px-3 py-2 font-bold" style="color: #be2d06;">{state.error?.includes('sheets:') ? state.error.split('sheets:')[0].trim() : 'Unknown file'}</td>
+								<td class="px-3 py-2" style="color: #65655e;">{state.error || 'Could not match to any known file type'}</td>
+								<td class="px-3 py-2 text-center"><span class="px-2 py-0.5 text-[10px] font-black uppercase" style="background: #be2d06; color: white;">REJECTED</span></td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+
+		<!-- Validation Tables (shown after IMPORTED) -->
+		{#each Object.entries(fileStates).filter(([_, s]) => s.status === 'IMPORTED' && s.validation && s.validation.length > 0) as [key, state]}
+			{@const fd = FILE_DEFS.find(f => f.key === key)}
+			{@const allPass = state.validation?.every((v: any) => v.pass) ?? false}
+			{@const passCount = state.validation?.filter((v: any) => v.pass).length ?? 0}
+			{@const fmtN = (v: number) => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : Math.round(v).toLocaleString()}
+			<div style="border: 2px solid {allPass ? '#007518' : '#ff9d00'};">
+				<div class="px-4 py-2 flex justify-between items-center" style="background: {allPass ? '#007518' : '#ff9d00'}; color: white;">
+					<span class="font-black uppercase text-xs">DATA QUALITY — {fd?.file || key} — {fd?.type?.toUpperCase() || key.toUpperCase()}</span>
+					<span class="text-[10px] font-bold">{passCount}/{state.validation?.length || 0} DATES PASS {allPass ? '✓' : ''}</span>
+				</div>
+				<div class="overflow-x-auto" style="max-height: 300px; overflow-y: auto;">
+					<table class="w-full text-[10px] font-mono">
+						<thead>
+							<tr style="background: #ebe8dd; position: sticky; top: 0;">
+								<th class="px-2 py-1.5 text-left font-black" style="border-bottom: 2px solid #383832;">DATE</th>
+								<th class="px-2 py-1.5 text-center font-black">SITES</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>EXCEL</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>DB</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>EXCEL</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>DB</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>EXCEL</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>DB</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>EXCEL</th>
+								<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>DB</th>
+								<th class="px-2 py-1.5 text-center font-black">STATUS</th>
 							</tr>
 						</thead>
 						<tbody>
-							{#each tabQueue as item, i}
-								<tr style="border-bottom: 1px solid rgba(56,56,50,0.15); {i % 2 ? 'background: #fcf9ef;' : ''}">
-									<td class="px-4 py-3 font-bold truncate max-w-[200px]" style="color: #383832;">{item.filename}</td>
-									<td class="px-4 py-3" style="color: #006f7c;">{item.type || '—'}</td>
-									<td class="px-4 py-3">
-										{#if item.type}
-											<span class="px-2 py-0.5 text-[9px] font-bold uppercase" style="background: {fileCategory(item.type) === 'DAILY' ? '#007518' : fileCategory(item.type) === 'REFERENCE' ? '#006f7c' : '#828179'}; color: white;">
-												{fileCategory(item.type)}
-											</span>
-										{:else}
-											<span style="color: #828179;">—</span>
-										{/if}
-									</td>
-									<td class="px-4 py-3" style="color: #383832;">{typeof item.rows === 'number' ? item.rows.toLocaleString() : '—'}</td>
-									<td class="px-4 py-3" style="color: #65655e;">{fmtSize(item.size)}</td>
-									<td class="px-4 py-3">
-										<span class="inline-flex items-center gap-1 px-2 py-0.5 font-bold uppercase text-[10px]" style="background: {statusColor[item.status]}; color: white;">
-											{statusIcon[item.status]} {item.status}
-										</span>
-										{#if item.error}<span class="text-[9px] ml-2" style="color: {item.status === 'WRONG_TAB' ? '#ff9d00' : '#be2d06'};">{item.error}</span>{/if}
-										{#if item.status === 'VALIDATING'}
-										{@const pct = validateProgress[queue.indexOf(item)] ?? 0}
-										<div class="inline-flex items-center gap-2 ml-2">
-											<div class="w-20 h-1.5" style="background: #ebe8dd; border: 1px solid #383832;">
-												<div class="h-full transition-all" style="background: #00fc40; width: {pct}%;"></div>
-											</div>
-											<span class="text-[9px] font-mono" style="color: #65655e;">{pct}%</span>
-										</div>
-									{:else if item.status === 'UPLOADING'}
-										<div class="inline-flex items-center gap-2 ml-2">
-											<div class="w-20 h-1.5" style="background: #ebe8dd; border: 1px solid #383832;">
-												<div class="h-full transition-all" style="background: #ff9d00; width: {uploadFileProgress}%;"></div>
-											</div>
-											<span class="text-[9px] font-mono" style="color: #65655e;">{uploadFileProgress}%</span>
-										</div>
-									{/if}
-									</td>
-									<td class="px-4 py-3">
-										{#if item.status === 'VALIDATED' || item.status === 'INVALID' || item.status === 'WRONG_TAB'}
-											<button onclick={() => removeByFilename(item.filename, item.tab || activeTab)} class="text-[9px] font-bold uppercase" style="color: #be2d06;">✕</button>
-										{/if}
-									</td>
+							{#each state.validation || [] as v, vi}
+								<tr style="background: {vi % 2 ? '#f6f4e9' : 'white'}; border-bottom: 1px solid #ebe8dd;">
+									<td class="px-2 py-1 font-bold">{v.date}</td>
+									<td class="px-2 py-1 text-center">{v.sites}</td>
+									<td class="px-2 py-1 text-center">{fmtN(v.excel.gen_hr)}</td>
+									<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.gen_hr - v.db.gen_hr) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.gen_hr)}</td>
+									<td class="px-2 py-1 text-center">{fmtN(v.excel.fuel)}</td>
+									<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.fuel - v.db.fuel) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.fuel)}</td>
+									<td class="px-2 py-1 text-center">{fmtN(v.excel.tank)}</td>
+									<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.tank - v.db.tank) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.tank)}</td>
+									<td class="px-2 py-1 text-center">{v.excel.blackout.toFixed(1)}</td>
+									<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.blackout - v.db.blackout) < 2 ? '#C6EFCE' : '#FFC7CE'};">{v.db.blackout.toFixed(1)}</td>
+									<td class="px-2 py-1 text-center font-black" style="color: {v.pass ? '#007518' : '#be2d06'};">{v.pass ? '✓ PASS' : '✗ FAIL'}</td>
 								</tr>
 							{/each}
 						</tbody>
 					</table>
 				</div>
-
-				<!-- Validation Table: Excel vs Pipeline vs DB -->
-				{#each tabQueue.filter(q => q.status === 'IMPORTED' && q.validation && q.validation.length > 0) as item}
-					{@const allPass = item.validation.every((v: any) => v.pass)}
-					{@const passCount = item.validation.filter((v: any) => v.pass).length}
-					{@const fmtN = (v: number) => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : Math.round(v).toLocaleString()}
-					<div class="mt-2" style="border: 2px solid {allPass ? '#007518' : '#ff9d00'};">
-						<div class="px-4 py-2 flex justify-between items-center" style="background: {allPass ? '#007518' : '#ff9d00'}; color: white;">
-							<span class="font-black uppercase text-xs">DATA QUALITY — {item.filename} — {item.type?.toUpperCase()}</span>
-							<span class="text-[10px] font-bold">{passCount}/{item.validation.length} DATES PASS {allPass ? '✓' : ''}</span>
-						</div>
-						<div class="overflow-x-auto" style="max-height: 300px; overflow-y: auto;">
-							<table class="w-full text-[10px] font-mono">
-								<thead>
-									<tr style="background: #ebe8dd; position: sticky; top: 0;">
-										<th class="px-2 py-1.5 text-left font-black" style="border-bottom: 2px solid #383832;">DATE</th>
-										<th class="px-2 py-1.5 text-center font-black">SITES</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>EXCEL</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>DB</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>EXCEL</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>DB</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>EXCEL</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>DB</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>EXCEL</th>
-										<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>DB</th>
-										<th class="px-2 py-1.5 text-center font-black">STATUS</th>
-									</tr>
-								</thead>
-								<tbody>
-									{#each item.validation as v, vi}
-										<tr style="background: {vi % 2 ? '#f6f4e9' : 'white'}; border-bottom: 1px solid #ebe8dd;">
-											<td class="px-2 py-1 font-bold">{v.date}</td>
-											<td class="px-2 py-1 text-center">{v.sites}</td>
-											<td class="px-2 py-1 text-center">{fmtN(v.excel.gen_hr)}</td>
-											<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.gen_hr - v.db.gen_hr) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.gen_hr)}</td>
-											<td class="px-2 py-1 text-center">{fmtN(v.excel.fuel)}</td>
-											<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.fuel - v.db.fuel) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.fuel)}</td>
-											<td class="px-2 py-1 text-center">{fmtN(v.excel.tank)}</td>
-											<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.tank - v.db.tank) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.tank)}</td>
-											<td class="px-2 py-1 text-center">{v.excel.blackout.toFixed(1)}</td>
-											<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.blackout - v.db.blackout) < 2 ? '#C6EFCE' : '#FFC7CE'};">{v.db.blackout.toFixed(1)}</td>
-											<td class="px-2 py-1 text-center font-black" style="color: {v.pass ? '#007518' : '#be2d06'};">{v.pass ? '✓ PASS' : '✗ FAIL'}</td>
-										</tr>
-									{/each}
-								</tbody>
-							</table>
-						</div>
-					</div>
-				{/each}
-
-				<!-- Submit Button -->
-				<div class="p-4 flex justify-between items-center" style="background: #ebe8dd; border-top: 2px solid #383832;">
-					<div class="text-[10px] font-bold uppercase" style="color: #65655e;">
-						{tabQueue.filter(q => q.status === 'VALIDATED').length} READY
-						{#if tabQueue.filter(q => q.status === 'INVALID').length > 0}
-							 · {tabQueue.filter(q => q.status === 'INVALID').length} INVALID
-						{/if}
-						{#if tabQueue.filter(q => q.status === 'WRONG_TAB').length > 0}
-							 · <span style="color: #ff9d00;">{tabQueue.filter(q => q.status === 'WRONG_TAB').length} WRONG_TAB</span>
-						{/if}
-						{#if allDone}
-							 · ALL_PROCESSED
-						{/if}
-					</div>
-					{#if hasValidated && !submitting}
-						<button onclick={submitUpload}
-							class="px-8 py-3 font-black uppercase text-sm active:translate-x-[2px] active:translate-y-[2px]"
-							style="background: #00fc40; color: #383832; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
-							SUBMIT_UPLOAD ({tabQueue.filter(q => q.status === 'VALIDATED').length} FILES)
-						</button>
-					{:else if submitting}
-						<div class="flex-1 mr-4">
-							<div class="flex items-center gap-3 mb-1">
-								<div class="text-[10px] font-black uppercase" style="color: #383832;">
-									PROCESSING {uploadProgress.current}/{uploadProgress.total}
-								</div>
-								<div class="text-[10px] font-mono" style="color: #65655e;">
-									{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')} elapsed
-								</div>
-							</div>
-							<!-- Overall file progress -->
-							<div class="w-full h-2 overflow-hidden mb-1" style="background: #ebe8dd; border: 1px solid #383832;">
-								<div class="h-full transition-all" style="background: #007518; width: {uploadProgress.total > 0 ? ((uploadProgress.current - 1 + uploadFileProgress / 100) / uploadProgress.total * 100) : 0}%;"></div>
-							</div>
-							<!-- Current file byte progress -->
-							<div class="flex items-center gap-2">
-								<span class="text-[9px] font-mono truncate" style="color: #ff9d00;">{uploadProgress.filename}</span>
-								<div class="w-24 h-1.5 shrink-0" style="background: #ebe8dd; border: 1px solid #383832;">
-									<div class="h-full transition-all" style="background: #00fc40; width: {uploadFileProgress}%;"></div>
-								</div>
-								<span class="text-[9px] font-mono shrink-0" style="color: #65655e;">{uploadFileProgress}%</span>
-							</div>
-						</div>
-						<div class="px-6 py-3 font-black uppercase text-sm animate-pulse shrink-0" style="background: #ff9d00; color: #383832; border: 2px solid #383832;">
-							UPLOADING...
-						</div>
-					{/if}
-				</div>
 			</div>
-		{/if}
+		{/each}
 
 		<!-- Last Sync Status (clickable cards) -->
 		<div>
@@ -680,6 +625,36 @@
 			{/if}
 		</div>
 
+		<!-- Purge Data (inline) -->
+		<div class="mt-4 p-4" style="background: white; border: 2px solid #ebe8dd;">
+			<div class="flex items-center gap-2 mb-3">
+				<span class="material-symbols-outlined text-sm" style="color: #be2d06;">delete_sweep</span>
+				<span class="text-[11px] font-black uppercase" style="color: #383832;">PURGE DATA</span>
+				<span class="text-[9px] font-bold uppercase" style="color: #65655e;">&mdash; clears DB so you can re-upload fresh</span>
+			</div>
+			<div class="flex flex-wrap gap-2">
+				{#each [
+					{ key: 'cmhl', label: 'CMHL', icon: 'storefront' },
+					{ key: 'cp', label: 'CP', icon: 'apartment' },
+					{ key: 'cfc', label: 'CFC', icon: 'bakery_dining' },
+					{ key: 'pg', label: 'PG', icon: 'local_shipping' },
+					{ key: 'fuel', label: 'FUEL', icon: 'local_gas_station' },
+					{ key: 'sales', label: 'SALES', icon: 'point_of_sale' },
+				] as t}
+					<button onclick={() => { if (confirm(`Purge all ${t.label} data? This cannot be undone.`)) clearData(t.key); }}
+						class="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-black uppercase active:translate-x-[1px] active:translate-y-[1px]"
+						style="background: white; border: 1px solid #be2d06; color: #be2d06;">
+						<span class="material-symbols-outlined text-sm">{t.icon}</span> {t.label}
+					</button>
+				{/each}
+				<button onclick={() => { if (confirm('Purge ALL data (blackout + fuel + sales + everything)? This cannot be undone.')) clearData('all'); }}
+					class="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-black uppercase active:translate-x-[1px] active:translate-y-[1px]"
+					style="background: #383832; border: 1px solid #be2d06; color: #f95630;">
+					<span class="material-symbols-outlined text-sm">delete_forever</span> PURGE ALL
+				</button>
+			</div>
+		</div>
+
 	<!-- Other tabs (same as before) -->
 	{:else if activeTab === 'summary'}
 		<div class="flex gap-3 mb-4">
@@ -734,12 +709,16 @@
 									<th class="px-2 py-1.5 text-center font-black">SITES</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>EXCEL</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>DB</th>
+									<th class="px-2 py-1.5 text-center font-black" style="color: #006f7c;">GEN HR<br/>DIFF</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>EXCEL</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>DB</th>
+									<th class="px-2 py-1.5 text-center font-black" style="color: #e85d04;">FUEL<br/>DIFF</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>EXCEL</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>DB</th>
+									<th class="px-2 py-1.5 text-center font-black" style="color: #007518;">TANK<br/>DIFF</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>EXCEL</th>
 									<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>DB</th>
+									<th class="px-2 py-1.5 text-center font-black" style="color: #be2d06;">BO<br/>DIFF</th>
 									<th class="px-2 py-1.5 text-center font-black">STATUS</th>
 								</tr>
 							</thead>
@@ -750,12 +729,16 @@
 										<td class="px-2 py-1 text-center">{v.sites}</td>
 										<td class="px-2 py-1 text-center">{fmtN(v.excel.gen_hr)}</td>
 										<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.gen_hr - v.db.gen_hr) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.gen_hr)}</td>
+										<td class="px-2 py-1 text-center font-bold" style="color: {(v.diff?.gen_hr || 0) === 0 ? '#007518' : '#be2d06'};">{(v.diff?.gen_hr || 0) === 0 ? '—' : (v.diff.gen_hr > 0 ? '+' : '') + fmtN(v.diff.gen_hr)}</td>
 										<td class="px-2 py-1 text-center">{fmtN(v.excel.fuel)}</td>
 										<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.fuel - v.db.fuel) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.fuel)}</td>
+										<td class="px-2 py-1 text-center font-bold" style="color: {(v.diff?.fuel || 0) === 0 ? '#007518' : '#be2d06'};">{(v.diff?.fuel || 0) === 0 ? '—' : (v.diff.fuel > 0 ? '+' : '') + fmtN(v.diff.fuel)}</td>
 										<td class="px-2 py-1 text-center">{fmtN(v.excel.tank)}</td>
 										<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.tank - v.db.tank) < 2 ? '#C6EFCE' : '#FFC7CE'};">{fmtN(v.db.tank)}</td>
+										<td class="px-2 py-1 text-center font-bold" style="color: {(v.diff?.tank || 0) === 0 ? '#007518' : '#be2d06'};">{(v.diff?.tank || 0) === 0 ? '—' : (v.diff.tank > 0 ? '+' : '') + fmtN(v.diff.tank)}</td>
 										<td class="px-2 py-1 text-center">{v.excel.blackout.toFixed(1)}</td>
 										<td class="px-2 py-1 text-center" style="background: {Math.abs(v.excel.blackout - v.db.blackout) < 2 ? '#C6EFCE' : v.bo_issue ? '#FFF3CD' : '#FFC7CE'};">{v.db.blackout.toFixed(1)}</td>
+										<td class="px-2 py-1 text-center font-bold" style="color: {(v.diff?.blackout || 0) === 0 ? '#007518' : '#be2d06'};">{(v.diff?.blackout || 0) === 0 ? '—' : (v.diff.blackout > 0 ? '+' : '') + v.diff.blackout.toFixed(1)}</td>
 										<td class="px-2 py-1 text-center font-black" style="color: {v.pass ? '#007518' : '#be2d06'};">{v.pass ? '✓' : '✗'}</td>
 									</tr>
 								{/each}
@@ -1045,63 +1028,5 @@
 			</div>
 		</div>
 
-	{:else if activeTab === 'danger'}
-		<div class="space-y-6">
-			<div class="p-6" style="background: white; border: 3px solid #be2d06; box-shadow: 4px 4px 0px 0px #383832;">
-				<div class="flex items-center gap-3 mb-4">
-					<span class="material-symbols-outlined text-2xl" style="color: #be2d06;">warning</span>
-					<div>
-						<h2 class="text-2xl font-black uppercase" style="color: #be2d06;">DANGER_ZONE</h2>
-						<p class="text-xs font-bold uppercase" style="color: #65655e;">IRREVERSIBLE_OPERATIONS — DATA_WILL_BE_PERMANENTLY_DELETED</p>
-					</div>
-				</div>
-
-				<div class="space-y-3">
-					<h3 class="text-sm font-black uppercase" style="color: #383832; border-bottom: 2px solid #383832; padding-bottom: 4px;">PURGE_BY_SECTOR</h3>
-					<div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-						{#each [
-							{ key: 'cmhl', label: 'CMHL', desc: 'City Mart Holdings — daily_operations + site_summary', icon: 'storefront' },
-							{ key: 'cp', label: 'CP', desc: 'City Properties — daily_operations + site_summary', icon: 'apartment' },
-							{ key: 'cfc', label: 'CFC', desc: 'City Food Concept — daily_operations + site_summary', icon: 'bakery_dining' },
-							{ key: 'pg', label: 'PG', desc: 'PG Sector — daily_operations + site_summary', icon: 'local_shipping' },
-						] as t}
-							<button onclick={() => clearData(t.key)} class="p-4 text-left active:translate-x-[2px] active:translate-y-[2px]"
-								style="background: white; border: 2px solid #be2d06; box-shadow: 3px 3px 0px 0px #be2d06;">
-								<span class="material-symbols-outlined text-lg" style="color: #be2d06;">{t.icon}</span>
-								<div class="text-sm font-black uppercase mt-1" style="color: #be2d06;">PURGE_{t.label}</div>
-								<div class="text-[9px] font-bold mt-1" style="color: #65655e;">{t.desc}</div>
-							</button>
-						{/each}
-					</div>
-
-					<h3 class="text-sm font-black uppercase mt-6" style="color: #383832; border-bottom: 2px solid #383832; padding-bottom: 4px;">PURGE_BY_TYPE</h3>
-					<div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-						{#each [
-							{ key: 'fuel', label: 'FUEL_PRICES', desc: 'All fuel purchase records', icon: 'local_gas_station' },
-							{ key: 'sales', label: 'SALES_DATA', desc: 'daily_sales + hourly_sales', icon: 'point_of_sale' },
-						] as t}
-							<button onclick={() => clearData(t.key)} class="p-4 text-left active:translate-x-[2px] active:translate-y-[2px]"
-								style="background: white; border: 2px solid #be2d06; box-shadow: 3px 3px 0px 0px #be2d06;">
-								<span class="material-symbols-outlined text-lg" style="color: #be2d06;">{t.icon}</span>
-								<div class="text-sm font-black uppercase mt-1" style="color: #be2d06;">PURGE_{t.label}</div>
-								<div class="text-[9px] font-bold mt-1" style="color: #65655e;">{t.desc}</div>
-							</button>
-						{/each}
-					</div>
-
-					<h3 class="text-sm font-black uppercase mt-6" style="color: #383832; border-bottom: 2px solid #383832; padding-bottom: 4px;">NUCLEAR_OPTION</h3>
-					<button onclick={() => clearData('all')} class="w-full p-4 text-left active:translate-x-[2px] active:translate-y-[2px]"
-						style="background: #383832; color: #feffd6; border: 2px solid #be2d06; box-shadow: 4px 4px 0px 0px #be2d06;">
-						<div class="flex items-center gap-3">
-							<span class="material-symbols-outlined text-2xl" style="color: #f95630;">delete_forever</span>
-							<div>
-								<div class="text-lg font-black uppercase">PURGE_ALL_DATA</div>
-								<div class="text-[10px] font-bold opacity-70">Deletes ALL daily operations, site summaries, fuel prices, sales, alerts, and AI cache</div>
-							</div>
-						</div>
-					</button>
-				</div>
-			</div>
-		</div>
 	{/if}
 </div>

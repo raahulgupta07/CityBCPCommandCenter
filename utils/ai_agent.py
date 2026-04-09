@@ -7,9 +7,12 @@ import os
 import json
 import hashlib
 import requests
+import logging
 from datetime import datetime
 from utils.database import get_db
 from config.settings import AGENT_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 def _get_cache_key(context: str, prompt_type: str) -> str:
@@ -23,7 +26,7 @@ def _get_cached(cache_key: str) -> str | None:
     try:
         with get_db() as conn:
             row = conn.execute(
-                "SELECT content, created_at FROM ai_insights_cache WHERE cache_key = ?",
+                "SELECT insight_text, generated_at FROM ai_insights_cache WHERE insight_key = ?",
                 (cache_key,)
             ).fetchone()
             if row:
@@ -31,8 +34,8 @@ def _get_cached(cache_key: str) -> str | None:
                 age_hours = (datetime.now() - created).total_seconds() / 3600
                 if age_hours < 6:
                     return row[0]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to read AI insight cache for key {cache_key}: {e}")
     return None
 
 
@@ -41,13 +44,13 @@ def _set_cache(cache_key: str, content: str, prompt_type: str):
     try:
         with get_db() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO ai_insights_cache (cache_key, page_key, context, content, created_at) "
+                "INSERT OR REPLACE INTO ai_insights_cache (insight_key, insight_type, insight_text, data_date, generated_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (cache_key, prompt_type, prompt_type, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                (cache_key, prompt_type, content, prompt_type, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             )
             conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to write AI insight cache for key {cache_key}: {e}")
 
 
 def _call_llm(prompt: str, max_tokens: int = 1024) -> str:

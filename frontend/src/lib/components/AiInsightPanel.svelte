@@ -2,13 +2,15 @@
 	import { api } from '$lib/api';
 	import { onMount } from 'svelte';
 
-	let { type = 'executive', data = {}, title = 'AI EXECUTIVE BRIEFING', autoLoad = true }: { type?: string; data?: any; title?: string; autoLoad?: boolean } = $props();
+	let { type = 'executive', data = {}, title = 'AI EXECUTIVE BRIEFING', autoLoad = true, filters = '' }: { type?: string; data?: any; title?: string; autoLoad?: boolean; filters?: string } = $props();
 
 	let content = $state('');
 	let loading = $state(false);
 	let error = $state('');
 	let timestamp = $state('');
 	let copied = $state(false);
+	let cachedFilters = $state('');
+	let filtersChanged = $derived(filters !== '' && cachedFilters !== filters);
 
 	// Cache key for localStorage
 	const cacheKey = `ai_insight_${type}_${data?.tab || 'default'}`;
@@ -21,6 +23,7 @@
 				const parsed = JSON.parse(cached);
 				content = parsed.content || '';
 				timestamp = parsed.timestamp || '';
+				cachedFilters = parsed.filters || '';
 				return; // Don't auto-generate if cached
 			} catch {}
 		}
@@ -37,8 +40,9 @@
 			const res = await api.post('/insights', { type, data, force_refresh: forceRefresh });
 			content = res.content || '';
 			timestamp = new Date().toLocaleString();
-			// Save to localStorage
-			localStorage.setItem(cacheKey, JSON.stringify({ content, timestamp }));
+			cachedFilters = filters;
+			// Save to localStorage with filter state
+			localStorage.setItem(cacheKey, JSON.stringify({ content, timestamp, filters }));
 		} catch (e: any) {
 			error = e.message || 'Failed to generate insight';
 		}
@@ -105,6 +109,20 @@
 			{/if}
 		</div>
 	</div>
+
+	{#if filtersChanged && content && !loading}
+		<div class="px-4 py-2.5 flex items-center justify-between" style="background: #fff3cd; border-bottom: 2px solid #ff9d00;">
+			<div class="flex items-center gap-2">
+				<span class="material-symbols-outlined text-sm" style="color: #ff9d00;">warning</span>
+				<span class="text-[10px] font-black uppercase" style="color: #383832;">Filters changed since last analysis</span>
+			</div>
+			<button onclick={() => generate(true)}
+				class="px-3 py-1.5 text-[10px] font-black uppercase flex items-center gap-1 animate-pulse"
+				style="background: #ff9d00; color: white; border: 1px solid #383832;">
+				<span class="material-symbols-outlined text-xs">refresh</span> REFRESH AI INSIGHTS
+			</button>
+		</div>
+	{/if}
 
 	{#if loading}
 		<div class="px-4 py-6 text-center">

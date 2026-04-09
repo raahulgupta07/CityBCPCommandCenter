@@ -753,7 +753,7 @@ def get_site_energy_breakdown(sector_id=None, date_from=None, date_to=None):
     return df.sort_values("energy_cost", ascending=False).round(2)
 
 
-def get_generator_detail(site_id):
+def get_generator_detail(site_id, date_from=None, date_to=None):
     """Per-generator breakdown for a specific BCP site."""
     with get_db() as conn:
         sector_row = conn.execute(
@@ -767,17 +767,26 @@ def get_generator_detail(site_id):
                 (sector,)
             ).fetchone()
             price = row[0] if row and row[0] else 0
-        df = pd.read_sql_query("""
+        date_filter = ""
+        params = []
+        if date_from:
+            date_filter += " AND do.date >= ?"
+            params.append(date_from)
+        if date_to:
+            date_filter += " AND do.date <= ?"
+            params.append(date_to)
+        params.append(site_id)
+        df = pd.read_sql_query(f"""
             SELECT g.model_name, g.power_kva, g.consumption_per_hour,
                    COALESCE(SUM(do.gen_run_hr), 0) as total_run_hrs,
                    COALESCE(SUM(do.daily_used_liters), 0) as total_liters,
                    COUNT(DISTINCT do.date) as days_tracked
             FROM generators g
-            LEFT JOIN daily_operations do ON g.generator_id = do.generator_id
+            LEFT JOIN daily_operations do ON g.generator_id = do.generator_id{date_filter}
             WHERE g.site_id = ? AND g.is_active = 1
             GROUP BY g.generator_id, g.model_name, g.power_kva, g.consumption_per_hour
             ORDER BY total_liters DESC
-        """, conn, params=(site_id,))
+        """, conn, params=params)
     if df.empty:
         return df
     df["energy_cost"] = df["total_liters"] * price
@@ -890,21 +899,3 @@ def _recommend(row):
     if pct <= ENERGY_DECISION["reduce_max_pct"]:
         return "REDUCE"
     return "CLOSE"
-
-
-def _get_status(energy_pct):
-    """Return status label based on energy cost percentage."""
-    if energy_pct <= ENERGY_COST["healthy_pct"]:
-        return "HEALTHY"
-    elif energy_pct <= ENERGY_COST["warning_pct"]:
-        return "WARNING"
-    elif energy_pct <= ENERGY_COST["critical_pct"]:
-        return "CRITICAL"
-    return "CLOSE"
-
-
-def _get_status_color(status):
-    return {
-        "HEALTHY": "#16a34a", "WARNING": "#d97706",
-        "CRITICAL": "#ea580c", "CLOSE": "#dc2626",
-    }.get(status, "#6b7280")

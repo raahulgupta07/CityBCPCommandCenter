@@ -2,10 +2,9 @@
 	import { onMount } from 'svelte';
 	import { api, downloadExcel } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 	import { lineChart, hbarChart, dualAxisChart } from '$lib/charts';
 
-	let { sector = '', dateFrom = '', dateTo = '' }: { sector?: string; dateFrom?: string; dateTo?: string } = $props();
+	let { sector = '', dateFrom = '', dateTo = '', siteType = 'All' }: { sector?: string; dateFrom?: string; dateTo?: string; siteType?: string } = $props();
 
 	let loading = $state(true);
 	let predictions: any = $state(null);
@@ -20,17 +19,18 @@
 
 	async function load() {
 		loading = true;
+		const tp = siteType !== 'All' ? `?site_type=${siteType}` : '';
 		try {
 			[predictions, fuelFc, dailySummary, generatorRisk, operatingModes, breakEven, anomalies, deliveryQueue, fuelIntel] = await Promise.all([
-				api.get('/predictions/all'),
-				api.get('/fuel-forecast'),
-				api.get('/daily-summary').catch(() => []),
-				api.get('/generator-risk').catch(() => []),
-				api.get('/operating-modes').catch(() => []),
-				api.get('/break-even').catch(() => []),
-				api.get('/anomalies').catch(() => []),
-				api.get('/delivery-queue').catch(() => []),
-				api.get('/fuel-intel').catch(() => null),
+				api.get(`/predictions/all${tp}`),
+				api.get(`/fuel-forecast${tp}`),
+				api.get(`/daily-summary${tp}`).catch(() => []),
+				api.get(`/generator-risk${tp}`).catch(() => []),
+				api.get(`/operating-modes${tp}`).catch(() => []),
+				api.get(`/break-even${tp}`).catch(() => []),
+				api.get(`/anomalies${tp}`).catch(() => []),
+				api.get(`/delivery-queue${tp}`).catch(() => []),
+				api.get(`/fuel-intel${tp}`).catch(() => null),
 			]);
 		} catch (e) { console.error(e); }
 		loading = false;
@@ -49,8 +49,6 @@
 	}
 </script>
 
-<AiInsightPanel type="kpi" data={{ tab: 'predictions', summary: 'Buffer depletion forecast, fuel price prediction (Ridge regression), 7-day projections, purchase volume analysis' }} title="AI INSIGHT — PREDICTIONS & FORECAST" />
-
 {#if !loading || predictions}
 
 	<!-- CHAPTER 1: BUFFER DEPLETION -->
@@ -65,6 +63,21 @@
 			sorted.map((r: any) => Math.round((r.days_until_stockout || 0) * 10) / 10),
 			{ title: 'Sites Running Out Soonest (days)', colors: sorted.map((r: any) => (r.days_until_stockout || 0) < 3 ? '#ef4444' : (r.days_until_stockout || 0) < 7 ? '#f59e0b' : '#22c55e') }
 		)} height="{Math.max(300, sorted.length * 28)}px" guide={{ formula: "Buffer depletion = current tank balance / average daily consumption. Shows <b>days until fuel runs out</b>.", sources: [{ data: 'Buffer Days', file: 'Blackout Hr Excel', col: 'Tank / Daily Used', method: 'Exponential smoothing' }], reading: [{ color: 'red', text: 'Short bar (< 3 days) = Send fuel NOW' }, { color: 'amber', text: '3-7 days = Plan delivery' }, { color: 'green', text: '7+ days = Safe' }], explain: "Countdown timer for each site's fuel tank. Red sites will run dry first — dispatch fuel there." }} />
+		<!-- Monte Carlo confidence bands -->
+		{#if sorted.some((r: any) => r.mc_p10 != null)}
+			<div class="px-4 py-2 mt-1">
+				<div class="text-[10px] font-bold uppercase mb-1" style="color: #383832;">Monte Carlo Confidence Intervals</div>
+				<div class="flex flex-wrap gap-2">
+					{#each sorted as row}
+						{#if row.mc_p10 != null}
+							<span class="text-[9px] px-1.5 py-0.5 rounded" style="background: #ebe8dd; color: #383832;">
+								{row.site_id}: P10: {row.mc_p10}d | P50: {row.mc_p50}d | P90: {row.mc_p90}d
+							</span>
+						{/if}
+					{/each}
+				</div>
+			</div>
+		{/if}
 	{:else}
 		<p class="text-sm mb-4" style="color: #383832;">No sites projected to run out within 7 days.</p>
 	{/if}
@@ -80,10 +93,25 @@
 		{@const allDates = [...hist.map((r: any) => r.date), ...fc.map((r: any) => r.date)]}
 		{@const histVals = [...hist.map((r: any) => Math.round(r.price || 0)), ...fc.map(() => 0)]}
 		{@const predVals = [...hist.map(() => 0), ...fc.map((r: any) => Math.round(r.predicted_price || 0))]}
-		<Chart option={lineChart(allDates, [
-			{ name: 'Historical', data: histVals, color: '#3b82f6' },
-			{ name: 'Forecast', data: predVals, color: '#ef4444' }
-		], { title: `Price Trend: ${(fuelFc.trend || 'stable').toUpperCase()}, R²: ${(fuelFc.r_squared || 0).toFixed(2)}` })} guide={{ formula: "Ridge regression with polynomial features predicts next 7 days of fuel prices.", sources: [{ data: 'Fuel Price', file: 'Daily Fuel Price Excel', col: 'Price/L', method: 'Ridge regression' }], reading: [{ color: 'blue', text: 'Blue = Actual historical prices' }, { color: 'red', text: 'Red = ML prediction (7-day)' }, { color: 'green', text: 'R-squared closer to 1.0 = More reliable' }], explain: "Uses <b>machine learning</b> to predict diesel prices based on past patterns. R-squared tells you how good the prediction is." }} />
+		{#if fuelFc.gbr_forecast}
+			{@const gbrVals = [...hist.map(() => 0), ...fuelFc.gbr_forecast.map((r: any) => Math.round(r.predicted_price || 0))]}
+			<Chart option={lineChart(allDates, [
+				{ name: 'Historical', data: histVals, color: '#3b82f6' },
+				{ name: 'Ridge Forecast', data: predVals, color: '#ef4444' },
+				{ name: 'GBR Forecast', data: gbrVals, color: '#8b5cf6' }
+			], { title: `Price Trend: ${(fuelFc.trend || 'stable').toUpperCase()}` })} guide={{ formula: "Ridge regression + GBR ensemble predicts next 7 days of fuel prices.", sources: [{ data: 'Fuel Price', file: 'Daily Fuel Price Excel', col: 'Price/L', method: 'Ridge + GBR ensemble' }], reading: [{ color: 'blue', text: 'Blue = Actual historical prices' }, { color: 'red', text: 'Red = Ridge regression prediction' }, { color: 'purple', text: 'Purple = GBR prediction' }], explain: "Uses <b>two ML models</b> to predict diesel prices. Compare Ridge vs GBR — closer R² to 1.0 = more reliable." }} />
+		{:else}
+			<Chart option={lineChart(allDates, [
+				{ name: 'Historical', data: histVals, color: '#3b82f6' },
+				{ name: 'Forecast', data: predVals, color: '#ef4444' }
+			], { title: `Price Trend: ${(fuelFc.trend || 'stable').toUpperCase()}, R²: ${(fuelFc.r_squared || 0).toFixed(2)}` })} guide={{ formula: "Ridge regression with polynomial features predicts next 7 days of fuel prices.", sources: [{ data: 'Fuel Price', file: 'Daily Fuel Price Excel', col: 'Price/L', method: 'Ridge regression' }], reading: [{ color: 'blue', text: 'Blue = Actual historical prices' }, { color: 'red', text: 'Red = ML prediction (7-day)' }, { color: 'green', text: 'R-squared closer to 1.0 = More reliable' }], explain: "Uses <b>machine learning</b> to predict diesel prices based on past patterns. R-squared tells you how good the prediction is." }} />
+		{/if}
+		<div class="flex gap-3 mt-2 px-4">
+			<span class="text-[10px] px-2 py-1 rounded" style="background: #ebe8dd;">Ridge R²: {(fuelFc.r_squared || 0).toFixed(3)}</span>
+			{#if fuelFc.gbr_r2}
+				<span class="text-[10px] px-2 py-1 rounded" style="background: #ebe8dd;">GBR R²: {fuelFc.gbr_r2.toFixed(3)}</span>
+			{/if}
+		</div>
 	{/if}
 
 	<!-- 7-Day Forecasts Grid -->
@@ -109,6 +137,9 @@
 					{@const opt = forecastChart(predictions[c.key], c.title, c.color)}
 					{#if opt}
 						<Chart option={opt} height="280px" guide={{ formula: "Exponential smoothing with trend extrapolation. Central line = forecast, gray = confidence band.", sources: [{ data: 'Daily Aggregates', file: 'Blackout Hr Excel', col: 'Various', method: 'Exponential smoothing' }], reading: [{ color: 'green', text: 'Flat trend = Stable operations' }, { color: 'red', text: 'Rising line = Budget pressure ahead' }], explain: "Predicts <b>next 7 days</b> based on recent trends. Gray bands show uncertainty range." }} />
+						<div class="text-[9px] mt-1 px-2" style="color: #65655e;">
+							Method: EMA + AR(3) | Updated: latest data
+						</div>
 					{/if}
 				{/each}
 			</div>

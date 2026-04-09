@@ -1,11 +1,9 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { groupedBar } from '$lib/charts';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
-	let { dateFrom = '', dateTo = '' }: { dateFrom?: string; dateTo?: string } = $props();
+	let { dateFrom = '', dateTo = '', siteType = 'All' }: { dateFrom?: string; dateTo?: string; siteType?: string } = $props();
 
 	let data: any[] = $state([]);
 	let loading = $state(true);
@@ -20,7 +18,6 @@
 		loading = false;
 	}
 
-	onMount(load);
 	$effect(() => { dateFrom; dateTo; load(); });
 
 	function val(type: string, key: string): number {
@@ -31,8 +28,6 @@
 	const cats = ['Gen Hours', 'Fuel Used (L)', 'Efficiency (L/Hr)', 'Buffer Days', 'Diesel Cost', 'Blackout Hr'];
 	const keys = ['avg_gen_hr', 'avg_fuel', 'efficiency', 'avg_buffer', 'avg_cost', 'avg_blackout'];
 </script>
-
-<AiInsightPanel type="kpi" data={{ tab: 'lng_comparison', summary: 'Regular diesel generators vs LNG generators — efficiency, cost, and buffer comparison' }} title="AI INSIGHT — REGULAR vs LNG" />
 
 {#if loading}
 	<p class="text-sm" style="color: #65655e; py-4 text-center">Loading...</p>

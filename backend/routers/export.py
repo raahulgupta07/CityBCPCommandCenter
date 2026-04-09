@@ -9,6 +9,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from backend.routers.auth import get_current_user
+from utils.database import get_db, log_activity
 
 router = APIRouter()
 
@@ -253,6 +254,12 @@ def export_excel(req: ExportRequest, user: dict = Depends(get_current_user)):
     buf.seek(0)
 
     filename = f"{req.table_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+
+    try:
+        with get_db() as conn:
+            log_activity(conn, user["id"], user["username"], "EXPORT", "DATA", f"Exported {req.table_name}")
+    except Exception:
+        pass
 
     return StreamingResponse(
         buf,

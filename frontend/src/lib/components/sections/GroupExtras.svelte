@@ -3,9 +3,10 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { barChart, hbarChart, groupedBar } from '$lib/charts';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
+	import InfoTip from '$lib/components/InfoTip.svelte';
+	import { KPI } from '$lib/kpi-definitions';
 
-	let { dateFrom = '', dateTo = '', sector = '' }: { dateFrom?: string; dateTo?: string; sector?: string } = $props();
+	let { dateFrom = '', dateTo = '', sector = '', siteType = 'All', sites = [] as string[] }: { dateFrom?: string; dateTo?: string; sector?: string; siteType?: string; sites?: string[] } = $props();
 
 	let daily: any[] = $state([]);
 	let fleet: any = $state({ dow_patterns: [], utilization: [], waste_scores: [] });
@@ -19,6 +20,7 @@
 		if (dateFrom) p.set('date_from', dateFrom);
 		if (dateTo) p.set('date_to', dateTo);
 		if (sector) p.set('sector', sector);
+		if (siteType !== 'All') p.set('site_type', siteType);
 		[daily, fleet, topGenHours, sectorHeatmap] = await Promise.all([
 			api.get(`/daily-summary?${p}`),
 			api.get(`/operations/fleet-stats?${p}`),
@@ -30,11 +32,16 @@
 
 	onMount(load);
 
+	// Site filtering
+	const fDaily = $derived(sites.length > 0 ? daily.filter((r: any) => sites.includes(r.site_id)) : daily);
+	const fWasteScores = $derived(sites.length > 0 ? fleet.waste_scores.filter((r: any) => sites.includes(r.site_id)) : fleet.waste_scores);
+	const fUtilization = $derived(sites.length > 0 ? fleet.utilization.filter((r: any) => sites.includes(r.site_id)) : fleet.utilization);
+
 	// ---------- LAST DAY BREAKDOWN ----------
 	function lastDayData() {
-		if (!daily.length) return null;
-		const maxDate = daily.reduce((m: string, r: any) => r.date > m ? r.date : m, '');
-		const rows = daily.filter((r: any) => r.date === maxDate);
+		if (!fDaily.length) return null;
+		const maxDate = fDaily.reduce((m: string, r: any) => r.date > m ? r.date : m, '');
+		const rows = fDaily.filter((r: any) => r.date === maxDate);
 		if (!rows.length) return null;
 
 		// #33 Top Sites by Fuel Used
@@ -70,12 +77,12 @@
 
 	// Week-over-Week
 	function wow() {
-		if (!daily.length) return null;
-		const dates = [...new Set(daily.map((r: any) => r.date))].sort();
+		if (!fDaily.length) return null;
+		const dates = [...new Set(fDaily.map((r: any) => r.date))].sort();
 		if (dates.length < 8) return null;
 		const mid = dates.length - 7;
-		const tw = daily.filter((r: any) => dates.indexOf(r.date) >= mid);
-		const lw = daily.filter((r: any) => dates.indexOf(r.date) >= mid - 7 && dates.indexOf(r.date) < mid);
+		const tw = fDaily.filter((r: any) => dates.indexOf(r.date) >= mid);
+		const lw = fDaily.filter((r: any) => dates.indexOf(r.date) >= mid - 7 && dates.indexOf(r.date) < mid);
 		const sum = (arr: any[], key: string) => arr.reduce((s: number, r: any) => s + (r[key] || 0), 0);
 		const twFuel = sum(tw, 'total_daily_used'), lwFuel = sum(lw, 'total_daily_used');
 		const twHrs = sum(tw, 'total_gen_run_hr'), lwHrs = sum(lw, 'total_gen_run_hr');
@@ -103,7 +110,7 @@
 		const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 		const buckets: Record<string, { fuel: number[]; hours: number[] }> = {};
 		days.forEach(d => buckets[d] = { fuel: [], hours: [] });
-		for (const r of daily) {
+		for (const r of fDaily) {
 			const dow = new Date(r.date).getDay();
 			const name = days[dow];
 			buckets[name].fuel.push(r.total_daily_used || 0);
@@ -118,7 +125,7 @@
 	// Recommendations
 	function recs() {
 		const r: { icon: string; color: string; text: string }[] = [];
-		const crit = daily.filter((d: any) => (d.days_of_buffer || 99) < 3);
+		const crit = fDaily.filter((d: any) => (d.days_of_buffer || 99) < 3);
 		if (crit.length > 0) {
 			const sites = [...new Set(crit.map((c: any) => c.site_id))].slice(0, 5);
 			r.push({ icon: '🔴', color: 'border-color: #be2d06', text: `${sites.length} sites have < 3 days diesel — send fuel: ${sites.join(', ')}` });
@@ -127,9 +134,7 @@
 	}
 </script>
 
-<AiInsightPanel type="kpi" data={{ tab: 'operations_extras', summary: 'Day-of-week patterns, week-over-week changes, waste/theft detection' }} title="AI INSIGHT — PATTERNS & WASTE" />
-
-{#if daily.length > 0 || !loading}
+{#if fDaily.length > 0 || !loading}
 	<!-- Last Day Breakdown -->
 	{@const ld = lastDayData()}
 	{#if ld}
@@ -151,7 +156,7 @@
 	<!-- Week over Week -->
 	{@const w = wow()}
 	{#if w}
-		<div style="background: #383832; color: #feffd6;" class="px-4 py-2.5 font-black text-sm uppercase mt-6">📅 WEEK OVER WEEK</div>
+		<div style="background: #383832; color: #feffd6;" class="px-4 py-2.5 font-black text-sm uppercase mt-6 flex items-center gap-2">📅 WEEK OVER WEEK <span class="ml-auto"></span><InfoTip {...KPI.waste.weekOverWeek} /></div>
 		<div class="flex flex-wrap gap-2 p-3 mb-6" style="background: #f6f4e9; border: 1px solid #383832; border-top: 0;">
 			{#each w as m}
 				{@const p = pct(m.tw, m.lw)}
@@ -199,21 +204,21 @@
 				</div>
 
 				<!-- Generator Utilization -->
-				{#if fleet.utilization.length > 0}
+				{#if fUtilization.length > 0}
 					<Chart option={hbarChart(
-						fleet.utilization.map((u: any) => `${u.site_id} ${u.model_name || ''}`),
-						fleet.utilization.map((u: any) => u.utilization_pct || 0),
-						{ title: 'Generator Utilization %', colors: fleet.utilization.map((u: any) => (u.utilization_pct || 0) > 80 ? '#be2d06' : (u.utilization_pct || 0) > 50 ? '#ff9d00' : '#007518') }
-					)} height="{Math.max(300, fleet.utilization.length * 24)}px" guide={{ formula: 'Active days ÷ Total reporting days × 100 = <b>utilization %</b>.', sources: [{ data: 'Gen Run Hours', file: 'Blackout Hr Excel', col: 'Gen Run Hr', method: 'COUNT days > 0' }], reading: [{ color: 'red', text: '🔴 > 80% = Running almost daily — heavy blackout area' }, { color: 'green', text: '🟢 < 30% = Generator rarely needed' }], explain: 'Shows how often each generator <b>actually runs</b>. High % = frequent blackouts in that area.' }} />
+						fUtilization.map((u: any) => `${u.site_id} ${u.model_name || ''}`),
+						fUtilization.map((u: any) => u.utilization_pct || 0),
+						{ title: 'Generator Utilization %', colors: fUtilization.map((u: any) => (u.utilization_pct || 0) > 80 ? '#be2d06' : (u.utilization_pct || 0) > 50 ? '#ff9d00' : '#007518') }
+					)} height="{Math.max(300, fUtilization.length * 24)}px" guide={{ formula: 'Active days ÷ Total reporting days × 100 = <b>utilization %</b>.', sources: [{ data: 'Gen Run Hours', file: 'Blackout Hr Excel', col: 'Gen Run Hr', method: 'COUNT days > 0' }], reading: [{ color: 'red', text: '🔴 > 80% = Running almost daily — heavy blackout area' }, { color: 'green', text: '🟢 < 30% = Generator rarely needed' }], explain: 'Shows how often each generator <b>actually runs</b>. High % = frequent blackouts in that area.' }} />
 				{/if}
 
 				<!-- Waste/Theft Scores -->
-				{#if fleet.waste_scores.length > 0}
+				{#if fWasteScores.length > 0}
 					<Chart option={hbarChart(
-						fleet.waste_scores.map((w: any) => w.site_id),
-						fleet.waste_scores.map((w: any) => w.waste_score || 0),
-						{ title: 'Theft/Waste Probability Score', colors: fleet.waste_scores.map((w: any) => (w.waste_score || 0) > 30 ? '#be2d06' : (w.waste_score || 0) > 15 ? '#ff9d00' : '#007518') }
-					)} height="{Math.max(200, fleet.waste_scores.length * 28)}px" guide={{ formula: '(Actual L/Hr ÷ Rated L/Hr − 1) × 100 = <b>waste score %</b>. Only sites with 3+ data points.', sources: [{ data: 'Efficiency', file: 'Blackout Hr Excel', col: 'Daily Used ÷ Gen Run Hr', method: 'AVG vs rated' }], reading: [{ color: 'red', text: '🔴 > 30% = Likely theft or major leak' }, { color: 'amber', text: '🟡 15-30% = Investigate maintenance' }, { color: 'green', text: '🟢 < 15% = Normal variation' }], explain: 'Compares <b>actual vs expected</b> fuel burn. A generator rated 20L/Hr burning 30L/Hr scores 50% — something is wrong.' }} />
+						fWasteScores.map((w: any) => w.site_id),
+						fWasteScores.map((w: any) => w.waste_score || 0),
+						{ title: 'Theft/Waste Probability Score', colors: fWasteScores.map((w: any) => (w.waste_score || 0) > 30 ? '#be2d06' : (w.waste_score || 0) > 15 ? '#ff9d00' : '#007518') }
+					)} height="{Math.max(200, fWasteScores.length * 28)}px" guide={{ formula: '(Actual L/Hr ÷ Rated L/Hr − 1) × 100 = <b>waste score %</b>. Only sites with 3+ data points.', sources: [{ data: 'Efficiency', file: 'Blackout Hr Excel', col: 'Daily Used ÷ Gen Run Hr', method: 'AVG vs rated' }], reading: [{ color: 'red', text: '🔴 > 30% = Likely theft or major leak' }, { color: 'amber', text: '🟡 15-30% = Investigate maintenance' }, { color: 'green', text: '🟢 < 15% = Normal variation' }], explain: 'Compares <b>actual vs expected</b> fuel burn. A generator rated 20L/Hr burning 30L/Hr scores 50% — something is wrong.' }} />
 				{/if}
 			</div>
 		</details>
@@ -293,15 +298,16 @@
 		</div>
 		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites have suspiciously high fuel consumption vs rated capacity?</div>
 	</div>
-	{#if fleet.waste_scores.length > 0}
-		{@const wasteRows = [...fleet.waste_scores].sort((a: any, b: any) => (b.waste_score || 0) - (a.waste_score || 0))}
+	{#if fWasteScores.length > 0}
+		{@const wasteRows = [...fWasteScores].sort((a: any, b: any) => (b.waste_score || 0) - (a.waste_score || 0))}
 		<div class="mb-6">
-			<div class="px-4 py-2.5 font-black text-sm uppercase" style="background: #383832; color: #feffd6;">WASTE / THEFT DETECTION</div>
+			<div class="px-4 py-2.5 font-black text-sm uppercase flex items-center gap-2" style="background: #383832; color: #feffd6;">WASTE / THEFT DETECTION <span class="ml-auto"></span><InfoTip {...KPI.waste.wasteRatio} /></div>
 			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; overflow-x: auto; overflow-y: auto; max-height: 500px;" class="mt-3">
 				<table class="w-full text-xs">
 					<thead>
 						<tr style="background: #ebe8dd;">
 							<th class="px-3 py-2 text-left font-black uppercase">SITE</th>
+							<th class="px-3 py-2 text-left font-black uppercase" style="color: #65655e;">CODE</th>
 							<th class="px-3 py-2 text-left font-black uppercase">SECTOR</th>
 							<th class="px-3 py-2 text-right font-black uppercase font-mono">ACTUAL L/HR</th>
 							<th class="px-3 py-2 text-right font-black uppercase font-mono">RATED L/HR</th>
@@ -315,6 +321,7 @@
 							{@const wrColor = wr > 2 ? '#be2d06' : wr > 1.5 ? '#ff9d00' : '#007518'}
 							<tr style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'};">
 								<td class="px-3 py-2 text-left">{row.site_id}</td>
+								<td class="px-3 py-2 text-left font-mono" style="color: #65655e;">{row.site_code || ''}</td>
 								<td class="px-3 py-2 text-left">{row.sector_id}</td>
 								<td class="px-3 py-2 text-right font-mono">{(row.actual_lph || 0).toFixed(1)}</td>
 								<td class="px-3 py-2 text-right font-mono">{(row.rated_lph || 0).toFixed(1)}</td>
@@ -324,6 +331,58 @@
 						{/each}
 					</tbody>
 				</table>
+			</div>
+			<!-- What each column means -->
+			<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+				<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+				<table class="w-full text-[10px]" style="border-collapse: collapse;">
+					<thead>
+						<tr style="background: #ebe8dd;">
+							<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+							<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+							<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr style="border-bottom: 1px solid #ebe8dd;">
+							<td class="py-1.5 px-2 font-bold" style="color: #383832;">SITE / CODE</td>
+							<td class="py-1.5 px-2" style="color: #383832;">Site identifier and sector-store code</td>
+							<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded Excel data</td>
+						</tr>
+						<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+							<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+							<td class="py-1.5 px-2" style="color: #383832;">Business sector</td>
+							<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded Excel data</td>
+						</tr>
+						<tr style="border-bottom: 1px solid #ebe8dd;">
+							<td class="py-1.5 px-2 font-bold" style="color: #383832;">ACTUAL L/HR</td>
+							<td class="py-1.5 px-2" style="color: #383832;">How much fuel the generator actually consumed per hour</td>
+							<td class="py-1.5 px-2 font-mono" style="color: #65655e;">total_daily_used &divide; total_gen_run_hr</td>
+						</tr>
+						<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+							<td class="py-1.5 px-2 font-bold" style="color: #383832;">RATED L/HR</td>
+							<td class="py-1.5 px-2" style="color: #383832;">How much fuel the generator SHOULD consume per hour (manufacturer spec)</td>
+							<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From generator specifications</td>
+						</tr>
+						<tr style="border-bottom: 1px solid #ebe8dd;">
+							<td class="py-1.5 px-2 font-bold" style="color: #383832;">WASTE RATIO</td>
+							<td class="py-1.5 px-2" style="color: #383832;">Actual &divide; Rated. 1.0 = normal. <span class="font-bold" style="color: #ff9d00;">&gt;1.5 = wasteful</span>. <span class="font-bold" style="color: #be2d06;">&gt;2.0 = likely theft or major leak</span></td>
+							<td class="py-1.5 px-2 font-mono" style="color: #65655e;">actual_lph &divide; rated_lph</td>
+						</tr>
+						<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+							<td class="py-1.5 px-2 font-bold" style="color: #383832;">WASTE SCORE</td>
+							<td class="py-1.5 px-2" style="color: #383832;">Higher = worse. Score above 30 = needs investigation</td>
+							<td class="py-1.5 px-2 font-mono" style="color: #65655e;">(waste_ratio &minus; 1) &times; 100</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+			<!-- How to use this table -->
+			<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+				<div class="text-[10px] font-black uppercase mb-1" style="color: #383832;">HOW TO USE THIS TABLE</div>
+				<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+					Sites with high waste ratios are consuming more fuel than expected. Possible causes: fuel theft, generator malfunction, fuel leaks, or incorrect tank readings. Investigate sites with WASTE RATIO above 1.5 &mdash; check physical tank levels, review security cameras, and inspect generator condition. A ratio above 2.0 is almost certainly theft or a serious mechanical problem.
+				</div>
 			</div>
 		</div>
 	{/if}

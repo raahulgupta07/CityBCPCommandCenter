@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import pandas as pd
 
-from utils.database import get_db, get_setting, set_setting
+from utils.database import get_db, get_setting, set_setting, log_activity
 from utils.auth import (
     create_user, list_users, update_user, delete_user, hash_password, ROLES,
 )
@@ -65,6 +65,11 @@ def create_new_user(req: CreateUserRequest, user: dict = Depends(require_super_a
     )
     if not success:
         raise HTTPException(status_code=409, detail=error)
+    try:
+        with get_db() as conn:
+            log_activity(conn, user["id"], user["username"], "USER_CREATE", "SYSTEM", f"Created user: {req.username} ({req.role})")
+    except Exception:
+        pass
     return {"ok": True, "message": f"User '{req.username}' created"}
 
 
@@ -97,7 +102,21 @@ def update_existing_user(user_id: int, req: UpdateUserRequest, user: dict = Depe
 
 @router.delete("/users/{user_id}")
 def delete_existing_user(user_id: int, user: dict = Depends(require_super_admin)):
+    # Get username before deletion for logging
+    deleted_username = None
+    try:
+        with get_db() as conn:
+            row = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row:
+                deleted_username = row[0]
+    except Exception:
+        pass
     delete_user(user_id)
+    try:
+        with get_db() as conn:
+            log_activity(conn, user["id"], user["username"], "USER_DELETE", "SYSTEM", f"Deleted user: {deleted_username or user_id}")
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -409,3 +428,50 @@ def clear_system_data(target: str, user: dict = Depends(require_super_admin)):
     with get_db() as conn:
         conn.execute(allowed[target])
     return {"ok": True, "message": f"Cleared {target}"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ACTIVITY LOG (Super Admin only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/activity-log")
+def get_activity_log(
+    page: int = 1,
+    limit: int = 50,
+    category: Optional[str] = None,
+    username: Optional[str] = None,
+    search: Optional[str] = None,
+    user: dict = Depends(require_super_admin),
+):
+    with get_db() as conn:
+        q = "SELECT * FROM activity_log WHERE 1=1"
+        params = []
+        if category and category != "ALL":
+            q += " AND category = ?"; params.append(category)
+        if username and username != "ALL":
+            q += " AND username = ?"; params.append(username)
+        if search:
+            q += " AND (detail LIKE ? OR action LIKE ?)"; params.extend([f"%{search}%", f"%{search}%"])
+
+        total = conn.execute(q.replace("SELECT *", "SELECT COUNT(*)"), params).fetchone()[0]
+
+        q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, (page - 1) * limit])
+
+        rows = conn.execute(q, params).fetchall()
+        logs = [dict(r) for r in rows]
+
+        # Get distinct users for filter dropdown
+        users = [r[0] for r in conn.execute("SELECT DISTINCT username FROM activity_log ORDER BY username").fetchall()]
+
+        return {"logs": logs, "total": total, "page": page, "limit": limit, "users": users}
+
+
+@router.get("/activity-log/summary")
+def activity_summary(user: dict = Depends(require_super_admin)):
+    with get_db() as conn:
+        today = conn.execute("SELECT COUNT(*) FROM activity_log WHERE date(created_at) = date('now')").fetchone()[0]
+        uploads_today = conn.execute("SELECT COUNT(*) FROM activity_log WHERE date(created_at) = date('now') AND action = 'UPLOAD'").fetchone()[0]
+        week = conn.execute("SELECT COUNT(*) FROM activity_log WHERE created_at >= datetime('now', '-7 days')").fetchone()[0]
+        active_users = conn.execute("SELECT COUNT(DISTINCT username) FROM activity_log WHERE created_at >= datetime('now', '-24 hours')").fetchone()[0]
+        return {"today": today, "uploads_today": uploads_today, "week_actions": week, "active_users": active_users}

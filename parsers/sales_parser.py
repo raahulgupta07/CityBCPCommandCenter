@@ -1,8 +1,9 @@
 """
 Parser for daily sales data.xlsx and hourly sales data.xlsx.
 
-Daily sales: SALES_DATE, Site Name, Brand, SALES_AMT, MARGIN
-Hourly sales: DocumentDate (int YYYYMMDD), Site Name, Brand, SALES_HR, SALES_AMT, TRANS_CNT
+Daily sales: SALES_DATE, GOLD_CODE, CostCenter, SegmentName, SALES_AMT, MARGIN
+Hourly sales: DocumentDate, Sales_HR, GOLD_CODE, CostCenter, SegmentName, TotalAmount
+SegmentName serves as the brand (e.g. "Ocean", "City Baby Club", "Safari", "City Care").
 """
 import pandas as pd
 from parsers.base_parser import clean_numeric, parse_date_from_cell
@@ -227,15 +228,18 @@ def _detect_columns(df, mode="daily"):
             cols["cost_center"] = col
         elif cl == "brand":
             cols["brand"] = col
-        elif "segmentname" in cl:
+        elif "segmentname" in cl or "segment" in cl:
             cols["segment"] = col  # SegmentName → used for sector resolution
             if "brand" not in cols:
                 cols["brand"] = col  # also treat as brand fallback
-        elif "salesamt" in cl or "salesamount" in cl:
+        elif "salesamt" in cl or "salesamount" in cl or "netsales" in cl or "totalsales" in cl:
             cols["amount"] = col
         elif "totalamount" in cl:
             cols["amount"] = col  # TotalAmount in hourly
-        elif cl == "sales" and mode == "daily":
+        elif ("amount" in cl or cl == "sales" or cl == "revenue") and mode == "daily":
+            if "amount" not in cols:
+                cols["amount"] = col
+        elif ("amount" in cl or cl == "sales") and mode == "hourly":
             if "amount" not in cols:
                 cols["amount"] = col
         elif cl == "margin":
@@ -244,4 +248,5 @@ def _detect_columns(df, mode="daily"):
             cols["hour"] = col
         elif "transcnt" in cl or "transcount" in cl or "transactioncount" in cl:
             cols["trans_cnt"] = col
+
     return cols

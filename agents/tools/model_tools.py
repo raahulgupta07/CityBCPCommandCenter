@@ -134,9 +134,14 @@ def run_sql(query):
     clean = query.strip().upper()
     if not clean.startswith("SELECT"):
         return {"error": "Only SELECT queries are allowed"}
-    for forbidden in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH"]:
+    if ";" in query.strip().rstrip(";"):
+        return {"error": "Multiple statements are not allowed"}
+    for forbidden in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH", "PRAGMA"]:
         if forbidden in clean:
             return {"error": f"Forbidden keyword: {forbidden}"}
+    for sensitive in ["USERS", "SESSIONS", "PASSWORD"]:
+        if sensitive in clean:
+            return {"error": "Access to sensitive data is restricted"}
 
     with get_db() as conn:
         try:

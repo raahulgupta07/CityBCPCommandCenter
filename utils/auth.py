@@ -63,11 +63,17 @@ PAGE_ACCESS = {
 # ─── Password Hashing ───────────────────────────────────────────────────────
 
 def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
+    return f"{salt}${h.hex()}"
 
 
-def verify_password(password, password_hash):
-    return hash_password(password) == password_hash
+def verify_password(password, stored_hash):
+    if '$' not in stored_hash:
+        # Legacy SHA-256 hash — verify and return True to allow migration
+        return hashlib.sha256(password.encode()).hexdigest() == stored_hash
+    salt, h = stored_hash.split('$', 1)
+    return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex() == h
 
 
 # ─── Session Token Management (survives browser refresh) ─────────────────────

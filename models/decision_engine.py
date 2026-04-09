@@ -5,11 +5,13 @@ Tier 1: Operating Mode, Delivery Queue, Cost/Hr, Weekly Budget, Buy Signal
 Tier 2: Generator Failure, Consumption Anomaly, Seasonal, Criticality, What-If
 Tier 3: Resource Sharing, Load Optimization, Price Elasticity, Cold Chain, Recovery Time
 """
-import numpy as np
+import logging
 import pandas as pd
 from datetime import datetime, timedelta
 from utils.database import get_db
 from config.settings import SECTORS, ALERTS, ENERGY_DECISION
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -72,8 +74,8 @@ def get_operating_modes():
                         "total_sales": er["total_sales"],
                         "recommendation": er["recommendation"],
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to load store economics for operating modes: {e}")
 
     results = []
     for _, row in df.iterrows():
@@ -246,7 +248,7 @@ def get_supplier_buy_signal():
     if len(signals) >= 2:
         cheapest = min(signals, key=lambda x: x["current_price"])
         priciest = max(signals, key=lambda x: x["current_price"])
-        savings_pct = round((priciest["current_price"] - cheapest["current_price"]) / priciest["current_price"] * 100, 1)
+        savings_pct = round((priciest["current_price"] - cheapest["current_price"]) / priciest["current_price"] * 100, 1) if priciest["current_price"] > 0 else 0
     else:
         cheapest = signals[0] if signals else {}
         savings_pct = 0
@@ -574,20 +576,29 @@ def get_recovery_time_estimate():
 # HELPER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _get_latest_price(sector_id):
-    """Get latest fuel price for a sector."""
+def _load_all_latest_prices():
+    """Load latest fuel prices for all sectors in one query."""
     with get_db() as conn:
-        row = conn.execute("""
-            SELECT price_per_liter FROM fuel_purchases
-            WHERE sector_id = ? AND price_per_liter IS NOT NULL
-            ORDER BY date DESC LIMIT 1
-        """, (sector_id,)).fetchone()
-    if row:
-        return row["price_per_liter"]
-    # Fallback: any sector price
-    with get_db() as conn:
-        row = conn.execute("""
-            SELECT AVG(price_per_liter) as p FROM fuel_purchases
+        rows = conn.execute("""
+            SELECT sector_id, price_per_liter FROM fuel_purchases
             WHERE price_per_liter IS NOT NULL
-        """).fetchone()
-    return row["p"] if row and row["p"] else 7000  # Default fallback
+            ORDER BY date DESC
+        """).fetchall()
+    prices = {}
+    for row in rows:
+        sid = row["sector_id"]
+        if sid not in prices:
+            prices[sid] = row["price_per_liter"]
+    if not prices:
+        return {}, 7000
+    fallback = sum(prices.values()) / len(prices)
+    return prices, fallback
+
+
+def _get_latest_price(sector_id, _cache={}):
+    """Get latest fuel price for a sector (uses cached prices)."""
+    if not _cache:
+        prices, fallback = _load_all_latest_prices()
+        _cache["prices"] = prices
+        _cache["fallback"] = fallback
+    return _cache["prices"].get(sector_id, _cache["fallback"])

@@ -21,6 +21,8 @@
 	import SiteModal from '$lib/components/SiteModal.svelte';
 	import Dictionary from '$lib/components/sections/Dictionary.svelte';
 	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
+	import InfoTip from '$lib/components/InfoTip.svelte';
+	import { KPI } from '$lib/kpi-definitions';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 
@@ -52,6 +54,7 @@
 	let siteId = $state('All Sites');
 	let selectedSites: string[] = $state([]);
 	let siteDropOpen = $state(false);
+	let siteSearchQ = $state('');
 	let siteType = $state('All');
 
 	// Default 60 days
@@ -330,7 +333,7 @@
 		<!-- Sector -->
 		<div class="flex-1 min-w-[140px]">
 			<div class="inline-block px-2 py-0.5 text-[9px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">SECTOR</div>
-			<select bind:value={sector} class="w-full px-3 py-2 text-sm font-bold uppercase" style="background: white; border: 2px solid #383832; color: #383832;">
+			<select bind:value={sector} class="w-full px-3 text-sm font-bold uppercase" style="background: white; border: 2px solid #383832; color: #383832; height: 40px;">
 				{#each dynamicSectorOptions as opt}
 					<option value={opt.value}>{opt.label}</option>
 				{/each}
@@ -345,8 +348,8 @@
 			<div class="inline-block px-2 py-0.5 text-[9px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">COMPANY</div>
 			<select bind:value={activeCompany}
 				disabled={sector === 'All Sectors'}
-				class="w-full px-3 py-2 text-sm font-bold uppercase"
-				style="background: {sector === 'All Sectors' ? '#ebe8dd' : 'white'}; border: 2px solid #383832; color: {sector === 'All Sectors' ? '#65655e' : '#383832'}; {sector === 'All Sectors' ? 'cursor: not-allowed;' : ''}">
+				class="w-full px-3 text-sm font-bold uppercase"
+				style="background: {sector === 'All Sectors' ? '#ebe8dd' : 'white'}; border: 2px solid #383832; color: {sector === 'All Sectors' ? '#65655e' : '#383832'}; height: 40px; {sector === 'All Sectors' ? 'cursor: not-allowed;' : ''}">
 				<option value="All">All Companies</option>
 				{#each availableCompanies() as c}<option value={c}>{c}</option>{/each}
 			</select>
@@ -358,9 +361,9 @@
 		{@const siteDisabled = sector === 'All Sectors' && activeCompany === 'All'}
 		<div class="flex-1 min-w-[180px] relative">
 			<div class="inline-block px-2 py-0.5 text-[9px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">SITE_ID</div>
-			<button onclick={() => { if (!siteDisabled) siteDropOpen = !siteDropOpen; }}
-				class="w-full flex items-center gap-2 px-3 py-2 text-sm font-bold uppercase text-left"
-				style="background: {siteDisabled ? '#ebe8dd' : 'white'}; border: 2px solid #383832; color: {siteDisabled ? '#65655e' : '#383832'}; {siteDisabled ? 'cursor: not-allowed;' : ''}">
+			<button onclick={() => { if (!siteDisabled) { siteDropOpen = !siteDropOpen; siteSearchQ = ''; } }}
+				class="w-full flex items-center gap-2 px-3 text-sm font-bold uppercase text-left"
+				style="background: {siteDisabled ? '#ebe8dd' : 'white'}; border: 2px solid #383832; color: {siteDisabled ? '#65655e' : '#383832'}; height: 40px; {siteDisabled ? 'cursor: not-allowed;' : ''}">
 				<span class="flex-1 truncate">{selectedSites.length === 0 ? 'ALL SITES' : selectedSites.length === 1 ? (siteList.find(s => s.id === selectedSites[0])?.name || selectedSites[0]) : selectedSites.length + ' SELECTED'}</span>
 				<span class="text-[8px]">{siteDropOpen ? '▲' : '▼'}</span>
 			</button>
@@ -368,7 +371,11 @@
 			{#if siteDropOpen}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div class="fixed inset-0 z-40" onclick={() => siteDropOpen = false}></div>
-				<div class="absolute top-full left-0 z-50 mt-1 w-full max-h-[300px] overflow-y-auto" style="background: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+				<div class="absolute top-full left-0 z-50 mt-1 w-full" style="background: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+					<!-- Search -->
+					<input type="text" bind:value={siteSearchQ} placeholder="Search site name or code..."
+						class="w-full px-3 py-2 text-xs font-mono uppercase"
+						style="border: none; border-bottom: 2px solid #383832; color: #383832;" />
 					<!-- Select All / Clear -->
 					<div class="flex gap-2 p-2" style="border-bottom: 1px solid #ebe8dd;">
 						<button onclick={() => { selectedSites = siteList.map(s => s.id); }} class="text-[10px] font-bold uppercase" style="color: #007518;">SELECT ALL</button>
@@ -376,7 +383,8 @@
 						<button onclick={() => { selectedSites = []; }} class="text-[10px] font-bold uppercase" style="color: #be2d06;">CLEAR</button>
 						<span class="text-[9px] ml-auto" style="color: #65655e;">{siteList.length} sites</span>
 					</div>
-					{#each siteList as s}
+					<div class="max-h-[250px] overflow-y-auto">
+					{#each siteSearchQ ? siteList.filter(s => s.name.toLowerCase().includes(siteSearchQ.toLowerCase()) || s.id.toLowerCase().includes(siteSearchQ.toLowerCase()) || (s.code || '').toLowerCase().includes(siteSearchQ.toLowerCase())) : siteList as s}
 						<label class="flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer transition-colors hover:bg-[#f6f4e9]" style="color: #383832;">
 							<input type="checkbox" checked={selectedSites.includes(s.id)}
 								onchange={() => {
@@ -388,6 +396,10 @@
 							<span class="text-[9px] ml-auto font-mono" style="color: #65655e;">{s.code || s.id}</span>
 						</label>
 					{/each}
+					{#if siteSearchQ && (siteSearchQ ? siteList.filter(s => s.name.toLowerCase().includes(siteSearchQ.toLowerCase()) || s.id.toLowerCase().includes(siteSearchQ.toLowerCase())).length : siteList.length) === 0}
+						<div class="px-3 py-3 text-center text-xs" style="color: #65655e;">No sites match "{siteSearchQ}"</div>
+					{/if}
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -395,7 +407,7 @@
 		<!-- Site Type -->
 		<div class="min-w-[100px]">
 			<div class="inline-block px-2 py-0.5 text-[9px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">TYPE</div>
-			<select bind:value={siteType} class="w-full px-3 py-2 text-sm font-bold uppercase" style="background: white; border: 2px solid #383832; color: #383832;">
+			<select bind:value={siteType} class="w-full px-3 text-sm font-bold uppercase" style="background: white; border: 2px solid #383832; color: #383832; height: 40px;">
 				<option value="All">ALL</option>
 				<option value="Regular">REGULAR</option>
 				<option value="LNG">LNG</option>
@@ -411,8 +423,8 @@
 		<!-- RESET Button -->
 		<div class="flex items-end">
 			<button onclick={resetFilters}
-				class="px-6 py-2 text-xs font-black uppercase active:translate-x-[1px] active:translate-y-[1px] flex items-center gap-1.5"
-				style="background: #be2d06; border: 2px solid #383832; color: #feffd6; box-shadow: 4px 4px 0px 0px #383832;">
+				class="px-6 text-xs font-black uppercase active:translate-x-[1px] active:translate-y-[1px] flex items-center gap-1.5"
+				style="background: #be2d06; border: 2px solid #383832; color: #feffd6; box-shadow: 4px 4px 0px 0px #383832; height: 40px;">
 				<span class="material-symbols-outlined text-sm">restart_alt</span>
 				RESET
 			</button>
@@ -533,37 +545,6 @@
 				{@const opModes = periodKpis.operating_modes || { OPEN: 0, MONITOR: 0, REDUCE: 0, CLOSE: 0 }}
 				{@const sectorSnap = periodKpis.sector_snapshot || []}
 				<div class="space-y-4 section-animate">
-
-					<!-- AI Executive Briefing (top of overview) -->
-					{#if periodKpis.last_day}
-						{@const aiData = {
-							date: periodKpis.last_day.date,
-							sites_reporting: periodKpis.last_day.sites,
-							total_sites: periodKpis.last_day.total_sites,
-							generators: periodKpis.last_day.generators,
-							buffer_days: periodKpis.last_day.buffer,
-							buffer_3d: periodKpis.last_3d?.buffer,
-							buffer_change_pct: periodKpis.last_3d?.buffer ? Math.round((periodKpis.last_day.buffer - periodKpis.last_3d.buffer) / Math.max(periodKpis.last_3d.buffer, 0.1) * 100) : 0,
-							total_fuel: periodKpis.last_day.total_fuel,
-							fuel_3d_avg: periodKpis.last_3d?.burn,
-							total_gen_hr: periodKpis.last_day.total_gen_hr,
-							total_tank: periodKpis.last_day.tank,
-							total_blackout: periodKpis.last_day.total_blackout,
-							blackout_per_site: periodKpis.last_day.blackout_per_site,
-							cost: periodKpis.last_day.cost,
-							fuel_price: periodKpis.last_day.fuel_price,
-							sales: periodKpis.last_day.sales,
-							diesel_pct: periodKpis.last_day.diesel_pct,
-							efficiency: periodKpis.last_day.efficiency,
-							critical_sites: periodKpis.last_day.crit,
-							warning_sites: periodKpis.last_day.warn,
-							safe_sites: periodKpis.last_day.safe,
-							sites_not_reported: periodKpis.last_day.sites_not_reported,
-							sector_snapshot: periodKpis.sector_snapshot || [],
-						}}
-						<AiInsightPanel type="executive" data={aiData} title="AI EXECUTIVE BRIEFING — OVERVIEW" />
-					{/if}
-
 					<!-- ═══ UNIFIED COCKPIT: LATEST vs 3D ═══ -->
 					{#if ld}
 						{@const bc1 = ld.buffer >= 7 ? '#007518' : ld.buffer >= 3 ? '#ff9d00' : '#be2d06'}
@@ -571,6 +552,9 @@
 						{@const daysAgo = Math.floor((Date.now() - new Date(ld.date).getTime()) / 86400000)}
 						{@const ageColor = daysAgo <= 1 ? '#007518' : daysAgo <= 3 ? '#ff9d00' : '#be2d06'}
 						{@const fmtV = (v: number) => { if (v >= 1e9) return (v/1e9).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'B'; if (v >= 1e6) return (v/1e6).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'M'; if (v >= 1e3) return (v/1e3).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})+'K'; return v.toLocaleString(); }}
+					<div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+					<!-- LEFT COLUMN: KPIs (3/5 = 60%) -->
+					<div class="lg:col-span-3 space-y-4">
 						<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
 							<!-- Header -->
 							<div class="px-4 py-2 flex justify-between items-center" style="background: #383832; color: #feffd6;">
@@ -648,26 +632,26 @@
 							{/if}
 
 							<!-- KPI Cards: Option 3 — Compact with horizontal bars -->
-							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
+							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-4 mt-2">
 								{#each [
 									{ t1: ld.total_gen_hr||0, t3: td?.gen_hr||0, tl: 'GEN RUN HR', tc: 'SUM(gen_run_hr)',
 									  s1: ld.gen_hr_per_site||0, s3: td?.gen_hr_per_site||0, sl: '/SITE', sdec: 1,
-									  good: 'low', key: 'gen_hr', color: '#ff9d00' },
+									  good: 'low', key: 'gen_hr', color: '#ff9d00', kpi: null },
 									{ t1: ld.total_fuel||ld.burn||0, t3: td?.burn||0, tl: 'FUEL USED (L)', tc: 'SUM(daily_used)',
 									  s1: ld.fuel_per_site||0, s3: td?.fuel_per_site||0, sl: '/SITE', sdec: 1,
-									  good: 'low', key: 'fuel', color: '#e85d04' },
+									  good: 'low', key: 'fuel', color: '#e85d04', kpi: null },
 									{ t1: ld.tank, t3: td?.tank||0, tl: 'TANK BAL (L)', tc: 'SUM(spare_tank)',
 									  s1: ld.tank_per_site||0, s3: td?.tank_per_site||0, sl: '/SITE',
-									  good: 'high', key: 'tank', color: '#007518' },
+									  good: 'high', key: 'tank', color: '#007518', kpi: KPI.overview.tankBalance },
 									{ t1: ld.total_blackout||0, t3: td?.total_blackout ? td.total_blackout / (td.days || 3) : 0, tl: 'BLACKOUT HR', tc: 'SUM(blackout)', tdec: 1,
 									  s1: ld.blackout_per_site||ld.blackout||0, s3: td?.blackout_per_site||td?.blackout||0, sl: '/SITE', sdec: 1,
-									  good: 'low', key: 'blackout', color: '#be2d06' },
+									  good: 'low', key: 'blackout', color: '#be2d06', kpi: null },
 									{ t1: ld.burn, t3: td?.burn||0, tl: 'BURN/DAY (L)', tc: 'SUM(used) ÷ days',
 									  s1: ld.efficiency||0, s3: td?.efficiency||0, sl: 'L/HR', sdec: 1,
-									  good: 'low', key: 'fuel', color: '#9d4867' },
-									{ t1: ld.cost, t3: td?.cost||0, tl: 'COST (MMK)', tc: 'burn × price',
-									  s1: ld.needed, s3: td?.needed||0, sl: 'NEEDED',
-									  good: 'low', key: 'fuel', color: '#6d597a' },
+									  good: 'low', key: 'fuel', color: '#9d4867', kpi: KPI.overview.burnPerDay },
+								{ t1: ld.cost, t3: td?.cost||0, tl: 'DIESEL COST (MMK)', tc: 'burn × fuel_price',
+									  s1: ld.sites > 0 ? ld.cost / ld.sites : 0, s3: td && td.sites > 0 ? td.cost / td.sites : 0, sl: '/SITE', sdec: 0,
+									  good: 'low', key: 'cost', color: '#6d597a', kpi: KPI.overview.dieselCost },
 								] as m, i}
 									{@const rd = periodKpis.recent_daily || []}
 									{@const tDiff = m.t3 ? ((m.t1 - m.t3) / Math.max(Math.abs(m.t3), 0.01) * 100) : 0}
@@ -683,7 +667,10 @@
 										<!-- Header -->
 										<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
 											<span class="text-[11px] font-black uppercase">{m.tl}</span>
-											<span class="text-[10px] font-bold" style="color: {tClr};">{tArr}{Math.abs(tDiff).toFixed(0)}% vs 3D</span>
+											<span class="flex items-center gap-2">
+												<span class="text-[10px] font-bold" style="color: {tClr};">{tArr}{Math.abs(tDiff).toFixed(0)}% vs 3D</span>
+												{#if m.kpi}<InfoTip {...m.kpi} />{/if}
+											</span>
 										</div>
 										<!-- KPIs row -->
 										<div class="flex">
@@ -740,18 +727,15 @@
 								{/each}
 							</div>
 
-							<!-- Sales, Cost, Diesel% — same card style with bar charts -->
-							<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+							<!-- Sales & Diesel% — same card style with bar charts -->
+							<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
 								{#each [
 									{ t1: ld.has_sales ? ld.sales : 0, t3: td?.has_sales ? td.sales : 0, tl: 'SALES (MMK)', tc: 'SUM(sales_amt)',
 									  s1: ld.has_sales && ld.sites > 0 ? ld.sales / ld.sites : 0, s3: td && td.has_sales && td.sites > 0 ? td.sales / td.sites : 0, sl: '/SITE', sdec: 0,
-									  good: 'high', key: 'sales', color: '#006f7c', na: !ld.has_sales },
-									{ t1: ld.cost, t3: td?.cost || 0, tl: 'DIESEL COST (MMK)', tc: 'burn × fuel_price',
-									  s1: ld.sites > 0 ? ld.cost / ld.sites : 0, s3: td && td.sites > 0 ? td.cost / td.sites : 0, sl: '/SITE', sdec: 0,
-									  good: 'low', key: 'cost', color: '#9d4867', na: false },
+									  good: 'high', key: 'sales', color: '#006f7c', na: !ld.has_sales, kpi: KPI.overview.sales },
 									{ t1: ld.has_sales ? ld.diesel_pct : 0, t3: td?.has_sales ? td.diesel_pct : 0, tl: 'DIESEL % OF SALES', tc: 'cost ÷ sales × 100', tdec: 2,
 									  s1: 0, s3: 0, sl: '', sdec: 0, noSite: true,
-									  good: 'low', key: 'diesel_pct', color: ld.has_sales && ld.diesel_pct > 3 ? '#be2d06' : '#007518', na: !ld.has_sales },
+									  good: 'low', key: 'diesel_pct', color: ld.has_sales && ld.diesel_pct > 3 ? '#be2d06' : '#007518', na: !ld.has_sales, kpi: KPI.overview.dieselPct },
 								] as m, i}
 									{@const rd = periodKpis.recent_daily || []}
 									{@const tDiff = m.t3 ? ((m.t1 - m.t3) / Math.max(Math.abs(m.t3), 0.01) * 100) : 0}
@@ -765,9 +749,12 @@
 									<div style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
 										<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
 											<span class="text-[11px] font-black uppercase">{m.tl}</span>
-											{#if !m.na}
-												<span class="text-[10px] font-bold" style="color: {tClr};">{tArr}{Math.abs(tDiff).toFixed(0)}% vs 3D</span>
-											{/if}
+											<span class="flex items-center gap-2">
+												{#if !m.na}
+													<span class="text-[10px] font-bold" style="color: {tClr};">{tArr}{Math.abs(tDiff).toFixed(0)}% vs 3D</span>
+												{/if}
+												{#if m.kpi}<InfoTip {...m.kpi} />{/if}
+											</span>
 										</div>
 										<div class="flex">
 											<div class="p-3 flex flex-col justify-center" style="flex: 1; {m.noSite ? '' : 'border-right: 1px dashed #ebe8dd;'}">
@@ -822,17 +809,6 @@
 								{/each}
 							</div>
 
-							<!-- Storyline -->
-							{#if periodKpis.story && periodKpis.story.length > 0}
-								<div class="px-4 py-3" style="background: white; border-top: 2px solid #383832;">
-									<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">SITUATION REPORT</div>
-									<div class="text-xs leading-relaxed" style="color: #383832;">
-										{#each periodKpis.story as line}
-											<p class="mb-1">{line}</p>
-										{/each}
-									</div>
-								</div>
-							{/if}
 
 							<!-- Sector Snapshot (Group view only) -->
 							{#if sectorSnap.length > 1}
@@ -923,6 +899,54 @@
 							</div>
 
 						</div>
+					</div>
+					<!-- RIGHT COLUMN: AI Insights (2/5 = 40%) -->
+					<div class="lg:col-span-2">
+						<div class="sticky" style="top: 1rem; max-height: calc(100vh - 120px); overflow-y: auto;">
+							<!-- Storyline -->
+							{#if periodKpis.story && periodKpis.story.length > 0}
+								<div class="px-4 py-3" style="background: white; border-top: 2px solid #383832;">
+									<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">SITUATION REPORT</div>
+									<div class="text-xs leading-relaxed" style="color: #383832;">
+										{#each periodKpis.story as line}
+											<p class="mb-1">{line}</p>
+										{/each}
+									</div>
+								</div>
+							{/if}
+
+					<!-- AI Executive Briefing (top of overview) -->
+					{#if periodKpis.last_day}
+						{@const aiData = {
+							date: periodKpis.last_day.date,
+							sites_reporting: periodKpis.last_day.sites,
+							total_sites: periodKpis.last_day.total_sites,
+							generators: periodKpis.last_day.generators,
+							buffer_days: periodKpis.last_day.buffer,
+							buffer_3d: periodKpis.last_3d?.buffer,
+							buffer_change_pct: periodKpis.last_3d?.buffer ? Math.round((periodKpis.last_day.buffer - periodKpis.last_3d.buffer) / Math.max(periodKpis.last_3d.buffer, 0.1) * 100) : 0,
+							total_fuel: periodKpis.last_day.total_fuel,
+							fuel_3d_avg: periodKpis.last_3d?.burn,
+							total_gen_hr: periodKpis.last_day.total_gen_hr,
+							total_tank: periodKpis.last_day.tank,
+							total_blackout: periodKpis.last_day.total_blackout,
+							blackout_per_site: periodKpis.last_day.blackout_per_site,
+							cost: periodKpis.last_day.cost,
+							fuel_price: periodKpis.last_day.fuel_price,
+							sales: periodKpis.last_day.sales,
+							diesel_pct: periodKpis.last_day.diesel_pct,
+							efficiency: periodKpis.last_day.efficiency,
+							critical_sites: periodKpis.last_day.crit,
+							warning_sites: periodKpis.last_day.warn,
+							safe_sites: periodKpis.last_day.safe,
+							sites_not_reported: periodKpis.last_day.sites_not_reported,
+							sector_snapshot: periodKpis.sector_snapshot || [],
+						}}
+						<AiInsightPanel type="executive" data={aiData} title="AI EXECUTIVE BRIEFING — OVERVIEW" filters={`${sector}|${dateFrom}|${dateTo}|${siteType}|${selectedSites.join(',')}`} />
+					{/if}
+						</div>
+					</div>
+					</div>
 					{/if}
 				</div>
 				{:else if dashSection === 'trends'}
@@ -950,8 +974,8 @@
 					</div>
 
 					<div class="space-y-6 section-animate">
-						<TrendCharts dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
-						<RollingCharts dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
+						<TrendCharts dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} siteType={siteType} />
+						<RollingCharts dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} siteType={siteType} />
 
 
 						<!-- #77 Blackout Calendar -->
@@ -1020,7 +1044,7 @@
 					<div class="space-y-6 section-animate">
 						<!-- CH1: ALL SITES (summary + site table) -->
 						<div id="where-sites" class="scroll-mt-36"></div>
-						<SectorSites sector={sectorApiParam()} company={activeCompany} sites={selectedSites} />
+						<SectorSites sector={sectorApiParam()} company={activeCompany} sites={selectedSites} siteType={siteType} />
 
 						<!-- CH3: REGULAR vs LNG -->
 						<div id="where-lng" class="scroll-mt-36">
@@ -1037,7 +1061,7 @@
 								</div>
 							</div>
 						</div>
-						<LngComparison dateFrom={dateFrom} dateTo={dateTo} />
+						<LngComparison dateFrom={dateFrom} dateTo={dateTo} siteType={siteType} />
 					</div>
 				<!-- ═══ TAB 04: HOW WE RAN ═══ -->
 				{:else if dashSection === 'operations'}
@@ -1094,23 +1118,23 @@
 							</div>
 						{/if}
 
-						<OperatingModes sector={sectorApiParam()} company={activeCompany} />
-						<OperationsTables sector={sectorApiParam()} />
-						<GroupExtras dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} />
+						<OperatingModes sector={sectorApiParam()} company={activeCompany} siteType={siteType} sites={selectedSites} />
+						<OperationsTables sector={sectorApiParam()} siteType={siteType} sites={selectedSites} />
+						<GroupExtras dateFrom={dateFrom} dateTo={dateTo} sector={sectorApiParam()} siteType={siteType} sites={selectedSites} />
 					</div>
 
 				<!-- ═══ TAB 05: WHAT'S AT RISK ═══ -->
 				{:else if dashSection === 'risk'}
-					<RiskPanel />
+					<RiskPanel siteType={siteType} sites={selectedSites} />
 
 				<!-- ═══ TAB 06: FUEL & COST ═══ -->
 				{:else if dashSection === 'fuel'}
-					<FuelIntel />
+					<FuelIntel siteType={siteType} sites={selectedSites} />
 
 				<!-- ═══ TAB 07: WHAT'S NEXT ═══ -->
 				{:else if dashSection === 'predictions'}
 					<div class="space-y-6 section-animate">
-						<Predictions sector={sectorApiParam()} dateFrom={dateFrom} dateTo={dateTo} />
+						<Predictions sector={sectorApiParam()} dateFrom={dateFrom} dateTo={dateTo} siteType={siteType} />
 						<WhatIf />
 						{#if transferData.length > 0}
 							<div style="border: 2px solid #383832; background: white;">
@@ -1154,7 +1178,7 @@
 
 		<!-- Site Modal -->
 		{#if showSiteModal}
-			<SiteModal siteId={modalSiteId} {sites} onclose={() => showSiteModal = false} />
+			<SiteModal siteId={modalSiteId} {sites} siteNames={Object.fromEntries(availableSites().map(s => [s.id, s.name]))} onclose={() => showSiteModal = false} />
 		{/if}
 
 		<!-- Site Comparison Modal -->

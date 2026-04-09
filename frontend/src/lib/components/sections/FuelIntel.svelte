@@ -2,8 +2,16 @@
 	import { api, downloadExcel } from '$lib/api';
 	import { onMount } from 'svelte';
 	import Chart from '$lib/components/Chart.svelte';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
+	import InfoTip from '$lib/components/InfoTip.svelte';
+	import { KPI } from '$lib/kpi-definitions';
 	import { lineChart, hbarChart } from '$lib/charts';
+
+	let { siteType = 'All', sites = [] as string[] }: { siteType?: string; sites?: string[] } = $props();
+
+	function filterBySites(data: any[]) {
+		if (!sites || sites.length === 0) return data;
+		return data.filter((r: any) => sites.includes(r.site_id));
+	}
 
 	let buySignal: any = $state({});
 	let budget: any = $state({});
@@ -22,8 +30,9 @@
 	async function load() {
 		loading = true;
 		error = '';
+		const tp = siteType !== 'All' ? `?site_type=${siteType}` : '';
 		try {
-			const data = await api.get('/fuel-intel');
+			const data = await api.get(`/fuel-intel${tp}`);
 			buySignal = data.buy_signal || {};
 			budget = data.weekly_budget || {};
 			forecast = data.forecast || {};
@@ -36,10 +45,10 @@
 		}
 		try {
 			const [sm, be, an, oa] = await Promise.all([
-				api.get('/site-mapping'),
-				api.get('/break-even'),
-				api.get('/anomalies').catch(() => ({ sites: [] })),
-				api.get('/ocean-cost-allocation').catch(() => ({ stores: [] })),
+				api.get(`/site-mapping${tp}`),
+				api.get(`/break-even${tp}`),
+				api.get(`/anomalies${tp}`).catch(() => ({ sites: [] })),
+				api.get(`/ocean-cost-allocation${tp}`).catch(() => ({ stores: [] })),
 			]);
 			oceanAlloc = oa;
 			mapped = sm.mapped || [];
@@ -137,9 +146,9 @@
 
 	let search = $state('');
 	const matchSearch = (r: any) => Object.values(r).some(v => String(v).toLowerCase().includes(search.toLowerCase()));
-	const filteredBreakEven = $derived(search ? breakEven.filter(matchSearch) : breakEven);
-	const filteredMapped = $derived(search ? mapped.filter(matchSearch) : mapped);
-	const filteredUnmapped = $derived(search ? unmapped.filter(matchSearch) : unmapped);
+	const filteredBreakEven = $derived(filterBySites(search ? breakEven.filter(matchSearch) : breakEven));
+	const filteredMapped = $derived(filterBySites(search ? mapped.filter(matchSearch) : mapped));
+	const filteredUnmapped = $derived(filterBySites(search ? unmapped.filter(matchSearch) : unmapped));
 	const filteredPurchaseLog = $derived(search ? purchaseLog.filter(matchSearch) : purchaseLog);
 	let recentLog = $derived(filteredPurchaseLog.slice(0, 50));
 
@@ -196,8 +205,6 @@
 	);
 </script>
 
-<AiInsightPanel type="kpi" data={{ tab: 'fuel_cost', summary: 'Fuel procurement signals, weekly budget forecast, price trends, purchase history, break-even analysis, site mapping' }} title="AI INSIGHT — FUEL & COST STRATEGY" />
-
 {#if loading}
 	<div class="flex items-center justify-center py-16">
 		<span class="text-sm font-black uppercase animate-pulse" style="color:#383832;">LOADING FUEL INTEL...</span>
@@ -211,7 +218,7 @@
 			<span class="material-symbols-outlined text-xs align-middle">refresh</span> RETRY
 		</button>
 	</div>
-{:else if suppliers.length === 0 && budgetRows.length === 0 && purchaseLog.length === 0 && breakEven.length === 0}
+{:else if suppliers.length === 0 && budgetRows.length === 0 && purchaseLog.length === 0 && filteredBreakEven.length === 0}
 	<div class="text-center py-12" style="background: #f6f4e9; border: 2px solid #383832;">
 		<span class="material-symbols-outlined text-3xl" style="color: #65655e;">inbox</span>
 		<p class="font-bold mt-2 uppercase text-xs" style="color: #383832;">NO DATA AVAILABLE</p>
@@ -233,7 +240,7 @@
 </div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4" style="background:#383832;border:2px solid #383832;">
-		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">
+		<h2 class="text-sm font-black uppercase tracking-wider flex items-center gap-2" style="color:#feffd6;">
 			SUPPLIER_BUY_SIGNAL
 			{#if cheapest}
 				<span class="ml-4 text-xs" style="color:#007518;">CHEAPEST: {cheapest}</span>
@@ -241,6 +248,7 @@
 			{#if savingsPct != null}
 				<span class="ml-2 text-xs" style="color:#ff9d00;">SAVE {fmtNum(savingsPct, 1)}%</span>
 			{/if}
+			<InfoTip {...KPI.fuelIntel.buySignal} />
 		</h2>
 	</div>
 
@@ -294,7 +302,7 @@
 </div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
-		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">WEEKLY_BUDGET_FORECAST</h2>
+		<h2 class="text-sm font-black uppercase tracking-wider flex items-center gap-2" style="color:#feffd6;">WEEKLY_BUDGET_FORECAST</h2>
 		<div class="flex items-center gap-3">
 			{#if budget.total_weekly_cost != null}
 				<span class="text-sm font-black" style="color:#ff9d00;">{fmtNum(budget.total_weekly_cost, 0)} MMK</span>
@@ -304,6 +312,7 @@
 				style="color: #00fc40;">
 				<span class="material-symbols-outlined text-sm">download</span> EXCEL
 			</button>
+			<InfoTip {...KPI.fuelIntel.weeklyBudget} />
 		</div>
 	</div>
 
@@ -341,6 +350,53 @@
 				</tfoot>
 			</table>
 		</div>
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Business sector</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded Excel data</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">AVG DAILY (L)</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Average liters consumed per day across all sites in sector</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">SUM(daily_used) &divide; COUNT(distinct dates)</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">WEEKLY (L)</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Projected weekly consumption</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">avg daily &times; 7</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">PRICE/L</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Current diesel price per liter</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Latest purchase price for sector</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">WEEKLY COST</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Estimated weekly fuel budget</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">weekly liters &times; price per liter</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<!-- How to use this table -->
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				Use this to plan your weekly diesel procurement budget. WEEKLY COST tells you how much cash to set aside for fuel. If a sector is consistently over budget, investigate which sites are consuming more than expected.
+			</div>
+		</div>
 	{:else}
 		<p class="text-xs" style="color:#65655e;">No budget data available.</p>
 	{/if}
@@ -353,7 +409,7 @@
 </div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4" style="background:#383832;border:2px solid #383832;">
-		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">FUEL_PRICE_FORECAST</h2>
+		<h2 class="text-sm font-black uppercase tracking-wider flex items-center gap-2" style="color:#feffd6;">FUEL_PRICE_FORECAST <span class="ml-auto"></span><InfoTip {...KPI.fuelIntel.priceForecast} /></h2>
 	</div>
 
 	{#if forecast.error}
@@ -408,6 +464,58 @@
 					{/each}
 				</tbody>
 			</table>
+		</div>
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">DATE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">When the fuel was purchased</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From fuel purchase records</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Which sector received the fuel</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From fuel purchase records</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SUPPLIER</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Which fuel supplier was used</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From fuel purchase records</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">TYPE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Fuel type purchased</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From fuel purchase records</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">QTY (L)</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Liters purchased</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From fuel purchase records</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">PRICE/L</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Unit price paid per liter</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From fuel purchase records</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<!-- How to use this table -->
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				Track purchase history to spot price trends and compare supplier pricing. If one supplier consistently charges more, consider switching. Compare quantity against actual consumption to check if purchases match usage.
+			</div>
 		</div>
 	{:else}
 		<p class="text-xs" style="color:#65655e;">No purchase records available.</p>
@@ -489,7 +597,7 @@
 </div>
 <div class="mb-8">
 	<div class="px-4 py-2 mb-4 flex items-center justify-between" style="background:#383832;border:2px solid #383832;">
-		<h2 class="text-sm font-black uppercase tracking-wider" style="color:#feffd6;">BREAK_EVEN_ANALYSIS</h2>
+		<h2 class="text-sm font-black uppercase tracking-wider flex items-center gap-2" style="color:#feffd6;">BREAK_EVEN_ANALYSIS</h2>
 		<div class="flex items-center gap-3">
 			{#if closeCount > 0}
 				<span class="px-2 py-0.5 text-[10px] font-black uppercase" style="background:#be2d06;color:#feffd6;">{closeCount} CLOSE</span>
@@ -499,6 +607,7 @@
 				style="color: #00fc40;">
 				<span class="material-symbols-outlined text-sm">download</span> EXCEL
 			</button>
+			<InfoTip {...KPI.risk.breakEven} />
 		</div>
 	</div>
 
@@ -565,7 +674,7 @@
 		</div>
 	</div>
 
-	{#if mapped.length > 0}
+	{#if filteredMapped.length > 0}
 		<div class="overflow-x-auto overflow-y-auto" style="border:2px solid #383832; max-height: 500px;">
 			<table class="w-full text-xs" style="background:#feffd6;">
 				<thead>
@@ -613,7 +722,7 @@
 		</div>
 	</div>
 
-	{#if unmapped.length > 0}
+	{#if filteredUnmapped.length > 0}
 		<div class="p-3 mb-3 text-xs font-bold" style="background:#feffd6;border:2px solid #ff9d00;color:#be2d06;">
 			These sites have no sales data &mdash; diesel% cannot be calculated
 		</div>
@@ -715,10 +824,10 @@
 							<td class="py-2 px-2 text-center">
 								<span class="px-2 py-0.5 text-[9px] font-bold uppercase" style="background: {s.type === 'Stand Alone' ? '#383832' : '#006f7c'}; color: white;">{s.type === 'Shopping Center' ? 'SHARED' : 'STAND ALONE'}</span>
 							</td>
-							<td class="py-2 px-2 text-center font-mono">{s.center_fuel.toLocaleString()}</td>
-							<td class="py-2 px-2 text-center font-mono">{fmtC(s.center_cost)}</td>
-							<td class="py-2 px-2 text-center font-black" style="color: {s.pct < 1 ? '#006f7c' : '#383832'};">{(s.pct * 100).toFixed(0)}%</td>
-							<td class="py-2 px-2 text-center font-black" style="color: #006f7c;">{fmtC(s.ocean_cost)}</td>
+							<td class="py-2 px-2 text-center font-mono">{(s.center_fuel ?? 0).toLocaleString()}</td>
+							<td class="py-2 px-2 text-center font-mono">{fmtC(s.center_cost ?? 0)}</td>
+							<td class="py-2 px-2 text-center font-black" style="color: {(s.pct ?? 0) < 1 ? '#006f7c' : '#383832'};">{((s.pct ?? 0) * 100).toFixed(0)}%</td>
+							<td class="py-2 px-2 text-center font-black" style="color: #006f7c;">{fmtC(s.ocean_cost ?? 0)}</td>
 						</tr>
 					{/each}
 				</tbody>

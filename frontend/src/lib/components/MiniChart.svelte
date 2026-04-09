@@ -2,12 +2,11 @@
 	import { onMount, onDestroy } from 'svelte';
 	import * as echarts from 'echarts';
 
-	let { dates = [], values = [], color = '#007518', height = '60px', areaOpacity = 0.15, good = 'low' }: {
+	let { dates = [], values = [], color = '#007518', height = '60px', good = 'low' }: {
 		dates?: string[];
 		values?: number[];
 		color?: string;
 		height?: string;
-		areaOpacity?: number;
 		good?: string;
 	} = $props();
 

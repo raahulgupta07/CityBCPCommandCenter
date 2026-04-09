@@ -45,6 +45,14 @@
 	let systemStats: Record<string, number> = $state({});
 	let confirmPurge = $state('');
 
+	// Activity Log
+	let activityLogs: any[] = $state([]);
+	let activitySummary: any = $state({});
+	let activityPage = $state(1);
+	let activityTotal = $state(0);
+	let activityFilter = $state({ category: 'ALL', username: 'ALL', search: '' });
+	let activityUsers: string[] = $state([]);
+
 	const SECTORS = ['CFC', 'CMHL', 'CP', 'PG'];
 	const PRESETS: Record<string, { server: string; port: number; tls: boolean }> = {
 		'Custom': { server: '', port: 587, tls: true },
@@ -71,6 +79,24 @@
 		setTimeout(() => message = '', 4000);
 	}
 
+	async function loadActivity() {
+		const params = new URLSearchParams({ page: String(activityPage), limit: '50' });
+		if (activityFilter.category !== 'ALL') params.set('category', activityFilter.category);
+		if (activityFilter.username !== 'ALL') params.set('username', activityFilter.username);
+		if (activityFilter.search) params.set('search', activityFilter.search);
+
+		const [logs, summary] = await Promise.all([
+			api.get(`/activity-log?${params}`),
+			api.get('/activity-log/summary'),
+		]);
+
+		if (activityPage === 1) activityLogs = logs.logs;
+		else activityLogs = [...activityLogs, ...logs.logs];
+		activityTotal = logs.total;
+		activityUsers = logs.users || [];
+		activitySummary = summary;
+	}
+
 	async function loadTabData(tab: string) {
 		try {
 			if (tab === 'users') users = await api.get('/users');
@@ -80,6 +106,7 @@
 			else if (tab === 'data_quality') dataQuality = await api.get('/data-quality');
 			else if (tab === 'formulas') formulas = await api.get('/formulas');
 			else if (tab === 'system') systemStats = await api.get('/system/stats');
+			else if (tab === 'activity_log') { activityPage = 1; await loadActivity(); }
 		} catch (e: any) { if (e.message !== 'Unauthorized') flash(e.message, 'error'); }
 	}
 
@@ -140,6 +167,7 @@
 		{ id: 'formulas', label: 'FORMULA_ENGINE' },
 		{ id: 'data_quality', label: 'DATA_QUALITY' },
 		{ id: 'system', label: 'SYS_RESOURCES' },
+		{ id: 'activity_log', label: 'ACTIVITY_LOG' },
 	];
 	const adminTabs = [
 		{ id: 'recipients', label: 'RECIPIENTS' },
@@ -828,6 +856,121 @@
 					</button>
 				{/each}
 			</div>
+		</div>
+
+	<!-- ═══════════════════════════════════════════════════════ -->
+	<!-- ACTIVITY LOG -->
+	<!-- ═══════════════════════════════════════════════════════ -->
+	{:else if activeTab === 'activity_log' && isSuperAdmin}
+		<!-- Summary KPI Cards -->
+		<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+			<div class="p-4" style="background: #383832; color: #feffd6; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+				<div class="text-[10px] font-black tracking-widest uppercase mb-1 opacity-60">TODAY</div>
+				<div class="text-3xl font-black">{activitySummary.today ?? 0}</div>
+				<div class="text-[9px] font-bold uppercase opacity-60 mt-1">ACTIONS_TODAY</div>
+			</div>
+			<div class="p-4" style="background: #ff9d00; color: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+				<div class="text-[10px] font-black tracking-widest uppercase mb-1 opacity-80">UPLOADS</div>
+				<div class="text-3xl font-black">{activitySummary.uploads_today ?? 0}</div>
+				<div class="text-[9px] font-bold uppercase opacity-80 mt-1">UPLOADS_TODAY</div>
+			</div>
+			<div class="p-4" style="background: #007518; color: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+				<div class="text-[10px] font-black tracking-widest uppercase mb-1 opacity-80">7D ACTIONS</div>
+				<div class="text-3xl font-black">{activitySummary.week ?? 0}</div>
+				<div class="text-[9px] font-bold uppercase opacity-80 mt-1">LAST_7_DAYS</div>
+			</div>
+			<div class="p-4" style="background: #6d597a; color: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+				<div class="text-[10px] font-black tracking-widest uppercase mb-1 opacity-80">ACTIVE USERS</div>
+				<div class="text-3xl font-black">{activitySummary.active_users ?? 0}</div>
+				<div class="text-[9px] font-bold uppercase opacity-80 mt-1">DISTINCT_24H</div>
+			</div>
+		</div>
+
+		<!-- Filter Bar -->
+		<div class="p-4 flex flex-wrap gap-3 items-end" style="background: #ebe8dd; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+			<div>
+				<div class="inline-block px-2 py-0.5 text-[10px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">USER</div>
+				<select class="w-full px-3 py-2 text-sm font-bold uppercase" style="background: white; border: 2px solid #383832; font-family: 'Space Grotesk', sans-serif;"
+					value={activityFilter.username}
+					onchange={(e) => { activityFilter = { ...activityFilter, username: (e.target as HTMLSelectElement).value }; activityPage = 1; loadActivity(); }}>
+					<option value="ALL">ALL USERS</option>
+					{#each activityUsers as u}
+						<option value={u}>{u.toUpperCase()}</option>
+					{/each}
+				</select>
+			</div>
+			<div>
+				<div class="inline-block px-2 py-0.5 text-[10px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">CATEGORY</div>
+				<select class="w-full px-3 py-2 text-sm font-bold uppercase" style="background: white; border: 2px solid #383832; font-family: 'Space Grotesk', sans-serif;"
+					value={activityFilter.category}
+					onchange={(e) => { activityFilter = { ...activityFilter, category: (e.target as HTMLSelectElement).value }; activityPage = 1; loadActivity(); }}>
+					<option value="ALL">ALL</option>
+					<option value="AUTH">AUTH</option>
+					<option value="DATA">DATA</option>
+					<option value="AI">AI</option>
+					<option value="SYSTEM">SYSTEM</option>
+				</select>
+			</div>
+			<div class="flex-1 min-w-[200px]">
+				<div class="inline-block px-2 py-0.5 text-[10px] font-black uppercase mb-1" style="background: #383832; color: #feffd6;">SEARCH</div>
+				<input type="text" placeholder="Search actions..." class="w-full px-3 py-2 text-sm font-bold" style="background: white; border: 2px solid #383832; font-family: 'Space Grotesk', sans-serif;"
+					value={activityFilter.search}
+					oninput={(e) => { activityFilter = { ...activityFilter, search: (e.target as HTMLInputElement).value }; activityPage = 1; loadActivity(); }} />
+			</div>
+		</div>
+
+		<!-- Activity Table -->
+		<div class="p-6" style="background: #f6f4e9; border-bottom-width: 3px; border-right-width: 3px; border-left-width: 2px; border-top-width: 2px; border-style: solid; border-color: #383832; box-shadow: 4px 4px 0px 0px #383832;">
+			<div class="flex items-center justify-between mb-6">
+				<h2 class="text-xl font-black underline uppercase">ACTIVITY_DISPATCH_LOG</h2>
+				<span class="px-2 font-bold text-xs text-white" style="background: #007518;">TOTAL: {String(activityTotal).padStart(2, '0')}_ENTRIES</span>
+			</div>
+			{#if activityLogs.length > 0}
+				<div class="overflow-x-auto" style="border: 2px solid #383832;">
+					<table class="w-full text-left font-bold text-sm uppercase">
+						<thead style="background: #383832; color: #feffd6;">
+							<tr>
+								<th class="p-3" style="border-right: 2px solid rgba(254,255,214,0.2);">TIMESTAMP</th>
+								<th class="p-3" style="border-right: 2px solid rgba(254,255,214,0.2);">USER</th>
+								<th class="p-3" style="border-right: 2px solid rgba(254,255,214,0.2);">CATEGORY</th>
+								<th class="p-3" style="border-right: 2px solid rgba(254,255,214,0.2);">ACTION</th>
+								<th class="p-3">DETAIL</th>
+							</tr>
+						</thead>
+						<tbody style="background: white;">
+							{#each activityLogs as log, i}
+								{@const isFail = (log.action || '').toUpperCase().includes('FAIL')}
+								{@const catColor = log.category === 'AUTH' ? '#007518' : log.category === 'DATA' ? '#ff9d00' : log.category === 'AI' ? '#6d597a' : '#383832'}
+								<tr style="border-bottom: 2px solid #383832; {isFail ? 'background: rgba(190,45,6,0.1);' : i % 2 ? 'background: #ebe8dd;' : ''}"
+									onmouseenter={(e) => (e.currentTarget as HTMLElement).style.background = isFail ? 'rgba(190,45,6,0.15)' : '#f6f4e9'}
+									onmouseleave={(e) => (e.currentTarget as HTMLElement).style.background = isFail ? 'rgba(190,45,6,0.1)' : i % 2 ? '#ebe8dd' : 'white'}>
+									<td class="p-3 font-mono text-xs" style="border-right: 2px solid #383832;">{log.timestamp?.slice(0, 19).replace('T', ' ') || '—'}</td>
+									<td class="p-3" style="border-right: 2px solid #383832;">{log.username || '—'}</td>
+									<td class="p-3" style="border-right: 2px solid #383832;">
+										<span class="px-2 py-0.5 text-[10px] font-black text-white" style="background: {catColor};">{log.category || '—'}</span>
+									</td>
+									<td class="p-3 text-xs" style="border-right: 2px solid #383832; {isFail ? 'color: #be2d06;' : ''}">{log.action || '—'}</td>
+									<td class="p-3 text-xs font-normal" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{log.detail || '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+
+				<!-- Load More -->
+				<div class="mt-4 flex items-center justify-between">
+					<span class="text-xs font-bold uppercase opacity-60">SHOWING {activityLogs.length} OF {activityTotal} ACTIVITIES</span>
+					{#if activityLogs.length < activityTotal}
+						<button onclick={() => { activityPage += 1; loadActivity(); }}
+							class="px-6 py-2 font-black text-sm uppercase active:translate-x-[2px] active:translate-y-[2px]"
+							style="background: #383832; color: #feffd6; border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832;">
+							LOAD_MORE
+						</button>
+					{/if}
+				</div>
+			{:else}
+				<div class="p-6 text-center font-bold uppercase opacity-50" style="background: white; border: 2px solid #383832;">NO_ACTIVITY_RECORDED</div>
+			{/if}
 		</div>
 	{/if}
 

@@ -83,10 +83,6 @@ def _resilience_score(usage_values):
 
 def _grade(score):
     """Convert numeric score to letter grade."""
-    for letter, info in sorted(BCP_GRADES.items()):
-        if score >= info["min"]:
-            result_grade = letter
-    # Reverse check (A is highest)
     if score >= 80:
         return "A"
     if score >= 60:

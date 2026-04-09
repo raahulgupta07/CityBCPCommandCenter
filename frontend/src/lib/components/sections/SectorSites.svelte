@@ -1,25 +1,28 @@
 <script lang="ts">
 	import { api, downloadExcel } from '$lib/api';
 	import { onMount } from 'svelte';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
-	let { sector = '', company = 'All', sites: selectedSiteIds = [] as string[] }: { sector?: string; company?: string; sites?: string[] } = $props();
+	let { sector = '', company = 'All', sites: selectedSiteIds = [] as string[], siteType = 'All' }: { sector?: string; company?: string; sites?: string[]; siteType?: string } = $props();
 	let sites: any[] = $state([]);
 	let count = $state(0);
 	let loading = $state(true);
 	let sector3dAvgFuel: Record<string, number> = $state({});
+	let allocatedSites: any[] = $state([]);
 
 	async function load() {
 		loading = true;
 		try {
 			const p = sector ? `?sector=${sector}` : '';
-			const data = await api.get(`/sector-sites${p}`);
+			const typeParam = siteType !== 'All' ? `${p ? '&' : '?'}site_type=${siteType}` : '';
+			const data = await api.get(`/sector-sites${p}${typeParam}`);
 			sites = (data.sites || []).sort((a: any, b: any) => (b.exp_pct || 0) - (a.exp_pct || 0));
 			count = data.count || 0;
 			sector3dAvgFuel = data.sector_3d_avg_fuel || {};
 		} catch (e) {
 			console.error(e);
 		}
+		// Load CP Center allocation data
+		api.get('/sector-sites/allocated').then(d => allocatedSites = d || []).catch(() => {});
 		loading = false;
 	}
 
@@ -56,6 +59,12 @@
 		const bad = higherIsGood ? pct < -1 : pct > 1;
 		const color = good ? '#007518' : bad ? '#be2d06' : '#65655e';
 		return { text: `${arrow}${Math.abs(pct).toFixed(0)}%`, color };
+	}
+
+	function fmtN(v: number): string {
+		if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+		if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+		return v.toFixed(0);
 	}
 
 	let search = $state('');
@@ -121,6 +130,10 @@
 			{ key: 'exp_3d', label: '3D AVG', formula: 'avg 3 days', align: 'center' },
 			{ key: 'exp_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
 		]},
+		{ group: 'LY BASELINE', color: '#65655e', cols: [
+			{ key: 'ly_cost', label: 'COST/DAY', formula: 'LY daily avg', align: 'center' },
+			{ key: 'ly_dpct', label: 'D%', formula: 'LY diesel%', align: 'center' },
+		]},
 	];
 
 	const actionColors: Record<string, string> = {
@@ -131,7 +144,6 @@
 	};
 </script>
 
-<AiInsightPanel type="table" data={{ tab: 'sectors', summary: 'Sector and site-level data with buffer, blackout, sales, cost, margin, diesel% comparisons across 1D vs 3D' }} title="AI INSIGHT — SECTORS & SITES" />
 
 {#if loading}
 	<p class="text-sm py-4 text-center" style="color: #65655e;">Loading sector sites...</p>
@@ -292,7 +304,7 @@
 					<span class="material-symbols-outlined text-sm">download</span> EXCEL
 				</button>
 			</div>
-			<table class="w-full text-xs" style="border-collapse: collapse;">
+			<table class="w-full text-xs sticky-table">
 				<thead class="sticky top-0 z-10">
 					<tr style="background: #383832;">
 						{#each sumColGroups as g}
@@ -322,8 +334,8 @@
 						{@const avgBuf = sec3dFuel > 0 ? d.sumTank1d / sec3dFuel : (d.sumBurn3d > 0 ? d.sumTank1d / d.sumBurn3d : 0)}
 						{@const bufColor = avgBuf >= 7 ? '#007518' : avgBuf >= 3 ? '#ff9d00' : '#be2d06'}
 						<tr style="background: {isGroupRow ? '#f0ede3' : i % 2 ? '#f6f4e9' : 'white'}; border-bottom: {isGroupRow ? '2px' : '1px'} solid {isGroupRow ? '#383832' : '#ebe8dd'};">
-							<td class="py-1.5 px-2 font-bold" style="color: #383832;">{isGroupRow ? '▸ ALL' : '  ' + name}</td>
-							<td class="py-1.5 px-2 text-center font-black">{d.count}</td>
+							<td class="py-1.5 px-2 font-bold sticky-col-0" style="color: #383832; background: inherit;">{isGroupRow ? '▸ ALL' : '  ' + name}</td>
+							<td class="py-1.5 px-2 text-center font-black sticky-col-1" style="background: inherit;">{d.count}</td>
 							<!-- Price + Buffer -->
 							<td class="py-1.5 px-2 text-center font-mono">{fmtN(d.sumPrice / n)}</td>
 							<td class="py-1.5 px-2 text-center font-bold" style="color: {bufColor};">{avgBuf.toFixed(1)}d</td>
@@ -367,6 +379,71 @@
 					{/each}
 				</tbody>
 			</table>
+		</div>
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">NAME</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Company or group name. <span class="font-bold">ALL</span> = entire fleet totals.</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SITES</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Number of store locations in this group</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">PRICE/L</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Average diesel price per liter across sites</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #007518;">BUFFER</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Days of fuel remaining (tank &divide; 3-day avg burn). <span class="font-bold" style="color: #007518;">&ge;7d = green</span>, <span class="font-bold" style="color: #ff9d00;">3&ndash;7d = orange</span>, <span class="font-bold" style="color: #be2d06;">&lt;3d = red</span></td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #65655e;">BLACKOUT HR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Hours without city power. 1D = yesterday, 3D = 3-day average</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #007518;">TANK 1D/3D</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Total liters in all tanks. Compare 1D vs 3D to see if fuel is being replenished</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #e85d04;">BURN/DAY 1D/3D</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Total liters consumed per day. Rising burn = more generator usage</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #006f7c;">SALES 1D/3D/TOTAL/AVG</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Revenue in MMK. Compare against cost to check profitability</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #9d4867;">DIESEL COST</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Fuel expenditure = liters used &times; price per liter</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #007518;">MARGIN %</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Profit margin percentage from sales</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #be2d06;">DIESEL % SALES</td>
+						<td class="py-1.5 px-2" style="color: #383832;">What fraction of sales goes to diesel. <span class="font-bold" style="color: #007518;">&lt;0.9% green</span>, <span class="font-bold" style="color: #c49700;">0.9&ndash;1.5% yellow</span>, <span class="font-bold" style="color: #ff9d00;">1.5&ndash;3% orange</span>, <span class="font-bold" style="color: #be2d06;">&gt;3% red</span></td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<!-- How to use -->
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				Compare companies side-by-side. The <span class="font-bold" style="color: #383832;">ALL</span> row shows fleet totals. Look for companies with high diesel % &mdash; they are spending too much on fuel relative to sales. Compare 1D vs 3D to spot sudden changes.
+			</div>
 		</div>
 	{/if}
 
@@ -418,6 +495,7 @@
 					diesel_pct_total: (s.exp_pct_total || 0).toFixed(2) + '%', diesel_pct_avg: (s.exp_pct || 0).toFixed(2) + '%',
 					diesel_pct_1d: (s.exp_pct_last_day || 0).toFixed(2) + '%', diesel_pct_3d: (s.exp_pct_3d || 0).toFixed(2) + '%',
 					diesel_pct_chg: pctChg(s.exp_pct_last_day||0, s.exp_pct_3d||0, false).text,
+					ly_cost_day: Math.round(s.ly_daily_cost || 0), ly_diesel_pct: (s.ly_pct_on_sales || 0).toFixed(2) + '%',
 				}));
 				downloadExcel(rows, 'Sector Sites', {
 					columnGroups: [
@@ -430,6 +508,7 @@
 						{ group: 'DIESEL COST (MMK)', color: '#9d4867', cols: ['cost_total', 'cost_avg', 'cost_1d', 'cost_3d', 'cost_chg'] },
 						{ group: 'MARGIN %', color: '#007518', cols: ['margin_total', 'margin_avg', 'margin_1d', 'margin_3d', 'margin_chg'] },
 						{ group: 'DIESEL % SALES', color: '#be2d06', cols: ['diesel_pct_total', 'diesel_pct_avg', 'diesel_pct_1d', 'diesel_pct_3d', 'diesel_pct_chg'] },
+						{ group: 'LY BASELINE', color: '#65655e', cols: ['ly_cost_day', 'ly_diesel_pct'] },
 					]
 				});
 			}}
@@ -439,7 +518,7 @@
 			</button>
 		</div>
 		<div class="overflow-x-auto overflow-y-auto" style="max-height: 600px;">
-			<table class="w-full text-xs" style="border-collapse: collapse;">
+			<table class="w-full text-xs sticky-table">
 				<thead class="sticky top-0 z-10">
 					<!-- Row 1: Merged group headers -->
 					<tr style="background: #383832;">
@@ -485,9 +564,9 @@
 					{@const avgSec3dFuel = avgSectorIds.reduce((s: number, sid: string) => s + (sector3dAvgFuel[sid] || 0), 0)}
 					{@const avgBufAll = avgSec3dFuel > 0 ? sum('tank') / avgSec3dFuel : (sum('daily_fuel') > 0 ? sum('tank') / sum('daily_fuel') : 0)}
 					{@const avgBufColor = avgBufAll >= 7 ? '#007518' : avgBufAll >= 3 ? '#ff9d00' : '#be2d06'}
-					<tr style="background: #383832; color: #feffd6; border-bottom: 3px solid #383832;">
-						<td class="py-2 px-2 font-black">AVG / TOTAL</td>
-						<td class="py-2 px-2 text-center text-[9px]">{filteredSites.length} sites</td>
+					<tr class="sticky-avg" style="background: #383832; color: #feffd6; border-bottom: 3px solid #383832; position: sticky; top: 80px; z-index: 5;">
+						<td class="py-2 px-2 font-black sticky-col-0" style="background: #383832;">AVG / TOTAL</td>
+						<td class="py-2 px-2 text-center text-[9px] sticky-col-1" style="background: #383832;">{filteredSites.length} sites</td>
 						<!-- Price + Buffer -->
 						<td class="py-2 px-2 text-center font-mono">{fmtN(avg('price'))}</td>
 						<td class="py-2 px-2 text-center font-bold" style="color: {avgBufColor};">{avgBufAll.toFixed(1)}d</td>
@@ -527,13 +606,16 @@
 						<td class="py-2 px-2 text-center font-mono">{fmtDec(avg('exp_pct_last_day'), 2)}%</td>
 						<td class="py-2 px-2 text-center font-mono">{fmtDec(avg('exp_pct_3d'), 2)}%</td>
 						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(avg('exp_pct_last_day'), avg('exp_pct_3d'), false).color};">{pctChg(avg('exp_pct_last_day'), avg('exp_pct_3d'), false).text}</td>
+						<!-- LY BASELINE -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtN(avg('ly_daily_cost'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtDec(avg('ly_pct_on_sales'), 2)}%</td>
 					</tr>
 					{/if}
 					{#each filteredSites as s, i}
 						<tr style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'}; border-bottom: 1px solid #ebe8dd;">
 							<!-- Identity -->
-							<td class="py-1.5 px-2 font-bold" style="color: #383832;">{s.site_id}</td>
-							<td class="py-1.5 px-2 font-mono text-xs" style="color: #383832;">{s.site_code || s.region || ''}</td>
+							<td class="py-1.5 px-2 font-bold sticky-col-0" style="color: #383832; background: inherit;">{s.site_id}</td>
+							<td class="py-1.5 px-2 font-mono text-xs sticky-col-1" style="color: #383832; background: inherit;">{s.site_code || s.region || ''}</td>
 							<!-- Price + Buffer -->
 							<td class="py-1.5 px-2 text-center font-mono">{icon(s.price||0,[3500,5000,8000],true)} {fmt(s.price||0)}</td>
 							<td class="py-1.5 px-2 text-center font-mono">{icon(s.buffer_days||0,[7,5,3])} {fmtDec(s.buffer_days||0)}</td>
@@ -573,6 +655,9 @@
 							<td class="py-1.5 px-2 text-center font-mono" style="color: {(s.exp_pct_last_day||0) > 3 ? '#be2d06' : (s.exp_pct_last_day||0) > 1.5 ? '#ff9d00' : '#007518'};">{icon(s.exp_pct_last_day||0,[0.9,1.5,3],true)} {fmtDec(s.exp_pct_last_day||0,2)}%</td>
 							<td class="py-1.5 px-2 text-center font-mono" style="color: {(s.exp_pct_3d||0) > 3 ? '#be2d06' : (s.exp_pct_3d||0) > 1.5 ? '#ff9d00' : '#007518'};">{icon(s.exp_pct_3d||0,[0.9,1.5,3],true)} {fmtDec(s.exp_pct_3d||0,2)}%</td>
 							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.exp_pct_last_day||0, s.exp_pct_3d||0, false).color};">{pctChg(s.exp_pct_last_day||0, s.exp_pct_3d||0, false).text}</td>
+							<!-- LY BASELINE -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7; color: #65655e;">{fmt(s.ly_daily_cost || 0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono" style="color: #65655e;">{fmtDec(s.ly_pct_on_sales || 0, 2)}%</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -592,7 +677,409 @@
 				&gt;7/5/3d</span
 			>
 		</div>
+	<!-- What each column means -->
+	<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+		<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead>
+				<tr style="background: #ebe8dd;">
+					<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+					<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">SITE</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Site ID (cost center code)</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">CODE</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Sector-store identifier (e.g., CMHL-MNCTTMS0)</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">PRICE/L</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Latest diesel purchase price. <span class="font-bold" style="color: #007518;">&lt;3.5K green</span>, <span class="font-bold" style="color: #c49700;">&lt;5K yellow</span>, <span class="font-bold" style="color: #ff9d00;">&lt;8K orange</span>, <span class="font-bold" style="color: #be2d06;">&gt;8K red</span></td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #007518;">BUFFER</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Days of fuel left. <span class="font-bold" style="color: #007518;">&ge;7d green</span>, <span class="font-bold" style="color: #c49700;">&ge;5d yellow</span>, <span class="font-bold" style="color: #ff9d00;">&ge;3d orange</span>, <span class="font-bold" style="color: #be2d06;">&lt;3d red</span></td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #65655e;">BLACKOUT HR</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Hours without power. Lower is better. <span class="font-bold" style="color: #007518;">&lt;4h green</span>, <span class="font-bold" style="color: #c49700;">&lt;8h yellow</span>, <span class="font-bold" style="color: #ff9d00;">&lt;12h orange</span>, <span class="font-bold" style="color: #be2d06;">&gt;12h red</span></td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #007518;">TANK (L)</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Liters in tank. 1D = latest day, 3D AVG = average of 3 days</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #e85d04;">BURN/DAY (L)</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Daily fuel consumption. Lower is better</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #006f7c;">SALES (MMK)</td>
+					<td class="py-1.5 px-2" style="color: #383832;">TOTAL = all dates, AVG/DAY = daily average, 1D = yesterday, 3D = 3-day avg</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #9d4867;">DIESEL COST (MMK)</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Fuel &times; price. Same breakdown as sales</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #007518;">MARGIN %</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Profit margin from sales data</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #be2d06;">DIESEL % SALES</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Cost as % of revenue. The key metric &mdash; tells you if fuel cost is sustainable</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #65655e;">LY BASELINE</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Last year's daily cost and diesel % for comparison</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #65655e;">1D vs 3D</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Percentage change. <span class="font-bold" style="color: #007518;">Green arrow = improving</span>, <span class="font-bold" style="color: #be2d06;">red arrow = worsening</span></td>
+				</tr>
+			</tbody>
+		</table>
 	</div>
+	<!-- How to use -->
+	<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+		<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+		<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+			Sort by <span class="font-bold" style="color: #383832;">DIESEL %</span> to find sites where fuel cost eats into profits. Compare current diesel % against <span class="font-bold" style="color: #383832;">LY BASELINE</span> to see if things are getting better or worse. <span class="font-bold" style="color: #be2d06;">Red buffer = schedule delivery immediately.</span>
+		</div>
+	</div>
+	</div>
+{/if}
+
+<!-- CHAPTER 3: CP CENTER ALLOCATION -->
+{#if allocatedSites.length > 0}
+<div class="mt-8">
+	<!-- Chapter heading -->
+	<div class="px-4 py-3 mb-3" style="background: #383832; color: #feffd6;">
+		<div class="flex items-center gap-3">
+			<span class="material-symbols-outlined text-2xl" style="color: #ff9d00;">account_balance</span>
+			<div>
+				<div class="font-black uppercase text-sm">CHAPTER 3: CP CENTER ALLOCATION</div>
+				<div class="text-[10px] opacity-75">Stores inside CP shopping centers — diesel cost allocated from center generators</div>
+			</div>
+		</div>
+		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? How much diesel cost is allocated to each store from the CP center generators?</div>
+	</div>
+
+	{#if true}
+	{@const allocColGroups = [
+		{ group: '', cols: [
+			{ key: 'site', label: 'SITE', formula: 'cost_center_code', align: 'left' },
+			{ key: 'name', label: 'NAME', formula: 'store name', align: 'left' },
+			{ key: 'center', label: 'CENTER', formula: 'CP center', align: 'left' },
+			{ key: 'alloc', label: 'ALLOC%', formula: 'store share', align: 'center' },
+		]},
+		{ group: '', cols: [
+			{ key: 'price', label: 'PRICE/L', formula: 'CP latest', align: 'center' },
+			{ key: 'buffer', label: 'BUFFER', formula: 'tank\u00F73d_fuel', align: 'center' },
+		]},
+		{ group: 'BLACKOUT HR', color: '#65655e', cols: [
+			{ key: 'bo_1d', label: '1D', formula: 'center 100%', align: 'center' },
+			{ key: 'bo_3d', label: '3D AVG', formula: 'center 100%', align: 'center' },
+			{ key: 'bo_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
+		]},
+		{ group: 'TANK (L)', color: '#007518', cols: [
+			{ key: 'tank_1d', label: '1D', formula: 'alloc%', align: 'center' },
+			{ key: 'tank_3d', label: '3D AVG', formula: 'alloc%', align: 'center' },
+			{ key: 'tank_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
+		]},
+		{ group: 'BURN/DAY (L)', color: '#e85d04', cols: [
+			{ key: 'burn_1d', label: '1D', formula: 'alloc%', align: 'center' },
+			{ key: 'burn_3d', label: '3D AVG', formula: 'alloc%', align: 'center' },
+			{ key: 'burn_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
+		]},
+		{ group: 'SALES (MMK)', color: '#006f7c', cols: [
+			{ key: 'sales_total', label: 'TOTAL', formula: 'all dates', align: 'center' },
+			{ key: 'sales_1d', label: '1D', formula: 'last day', align: 'center' },
+			{ key: 'sales_3d', label: '3D AVG', formula: 'avg 3 days', align: 'center' },
+			{ key: 'sales_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
+		]},
+		{ group: 'DIESEL COST (MMK)', color: '#9d4867', cols: [
+			{ key: 'cost_1d', label: '1D', formula: 'fuel\u00D7price', align: 'center' },
+			{ key: 'cost_3d', label: '3D AVG', formula: 'avg fuel\u00D7price', align: 'center' },
+			{ key: 'cost_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
+		]},
+		{ group: 'DIESEL % SALES', color: '#be2d06', cols: [
+			{ key: 'exp_1d', label: '1D', formula: 'cost\u00F7sales', align: 'center' },
+			{ key: 'exp_3d', label: '3D AVG', formula: 'cost\u00F7sales', align: 'center' },
+			{ key: 'exp_chg', label: '1D vs 3D', formula: '% change', align: 'center' },
+		]},
+		{ group: 'LY BASELINE', color: '#65655e', cols: [
+			{ key: 'ly_cost', label: 'COST/DAY', formula: 'LY daily avg', align: 'center' },
+			{ key: 'ly_dpct', label: 'D%', formula: 'LY diesel%', align: 'center' },
+		]},
+		{ group: 'CP CENTER (100% RAW)', color: '#65655e', cols: [
+			{ key: 'cp_tank', label: 'TANK', formula: 'center total', align: 'center' },
+			{ key: 'cp_fuel', label: 'FUEL', formula: 'center total', align: 'center' },
+			{ key: 'cp_cost', label: 'COST', formula: 'center total', align: 'center' },
+		]},
+	]}
+
+	{@const filteredAllocated = (() => { let f = allocatedSites; if (selectedSiteIds && selectedSiteIds.length > 0) f = f.filter((r: any) => selectedSiteIds.includes(r.site_id)); if (company && company !== 'All') f = f.filter((r: any) => r.company === company); if (search) f = f.filter((r: any) => Object.values(r).some((v: any) => String(v).toLowerCase().includes(search.toLowerCase()))); return f; })()}
+
+	<div class="overflow-hidden" style="background: white; border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832;">
+		<div class="px-4 py-2 font-black uppercase tracking-wider text-sm flex items-center justify-between" style="background: #383832; color: #feffd6;">
+			<span>CP_CENTER_ALLOCATION</span>
+			<button onclick={() => {
+				const rows = filteredAllocated.map((s: any) => ({
+					site: s.site_id || '', name: s.site_name || '', center: s.center_id || '', alloc_pct: (s.allocation_pct || 0).toFixed(1) + '%',
+					price_l: s.price || 0, buffer: fmtDec(s.buffer || 0) + 'd',
+					blackout_1d: fmtDec(s.blackout_1d || 0), blackout_3d: fmtDec(s.blackout_3d || 0),
+					blackout_chg: pctChg(s.blackout_1d||0, s.blackout_3d||0, false).text,
+					tank_1d: Math.round(s.tank_1d || 0), tank_3d: Math.round(s.tank_3d || 0),
+					tank_chg: pctChg(s.tank_1d||0, s.tank_3d||0, true).text,
+					burn_1d: Math.round(s.fuel_1d || 0), burn_3d: Math.round(s.fuel_3d || 0),
+					burn_chg: pctChg(s.fuel_1d||0, s.fuel_3d||0, false).text,
+					sales_total: Math.round(s.sales_total || 0),
+					sales_1d: Math.round(s.sales_1d || 0), sales_3d: Math.round(s.sales_3d || 0),
+					sales_chg: pctChg(s.sales_1d||0, s.sales_3d||0, true).text,
+					cost_1d: Math.round(s.cost_1d || 0), cost_3d: Math.round(s.cost_3d || 0),
+					cost_chg: pctChg(s.cost_1d||0, s.cost_3d||0, false).text,
+					diesel_pct_1d: fmtDec(s.diesel_pct_1d || 0, 2) + '%', diesel_pct_3d: fmtDec(s.diesel_pct_3d || 0, 2) + '%',
+					diesel_pct_chg: pctChg(s.diesel_pct_1d||0, s.diesel_pct_3d||0, false).text,
+					ly_cost_day: Math.round(s.ly_daily_cost || 0), ly_diesel_pct: (s.ly_pct_on_sales || 0).toFixed(2) + '%',
+					cp_center_tank: Math.round(s.center_tank_1d || 0),
+					cp_center_fuel: Math.round(s.center_fuel_1d || 0),
+					cp_center_cost: Math.round(s.center_cost_1d || 0),
+				}));
+				downloadExcel(rows, 'CP Center Allocation', {
+					columnGroups: [
+						{ group: '', cols: ['site', 'name', 'center', 'alloc_pct'] },
+						{ group: '', cols: ['price_l', 'buffer'] },
+						{ group: 'BLACKOUT HR', color: '#65655e', cols: ['blackout_1d', 'blackout_3d', 'blackout_chg'] },
+						{ group: 'TANK (L)', color: '#007518', cols: ['tank_1d', 'tank_3d', 'tank_chg'] },
+						{ group: 'BURN/DAY (L)', color: '#e85d04', cols: ['burn_1d', 'burn_3d', 'burn_chg'] },
+						{ group: 'SALES (MMK)', color: '#006f7c', cols: ['sales_total', 'sales_1d', 'sales_3d', 'sales_chg'] },
+						{ group: 'DIESEL COST (MMK)', color: '#9d4867', cols: ['cost_1d', 'cost_3d', 'cost_chg'] },
+						{ group: 'DIESEL % SALES', color: '#be2d06', cols: ['diesel_pct_1d', 'diesel_pct_3d', 'diesel_pct_chg'] },
+						{ group: 'LY BASELINE', color: '#65655e', cols: ['ly_cost_day', 'ly_diesel_pct'] },
+						{ group: 'CP CENTER (100% RAW)', color: '#65655e', cols: ['cp_center_tank', 'cp_center_fuel', 'cp_center_cost'] },
+					]
+				});
+			}}
+				class="text-[10px] font-bold uppercase flex items-center gap-1 opacity-70 hover:opacity-100" style="color: #00fc40;">
+				<span class="material-symbols-outlined text-sm">download</span> EXCEL
+			</button>
+		</div>
+		<div class="overflow-x-auto overflow-y-auto" style="max-height: 600px;">
+			<table class="w-full text-xs" style="border-collapse: collapse;">
+				<thead class="sticky top-0 z-10">
+					<!-- Row 1: Merged group headers -->
+					<tr style="background: #383832;">
+						{#each allocColGroups as g}
+							{#if g.group}
+								<th colspan={g.cols.length} class="text-center px-1 py-1.5 text-[9px] font-black uppercase tracking-wider"
+									style="color: white; border-left: 2px solid #feffd6; border-right: 2px solid #feffd6; background: {g.color};">
+									{g.group}
+								</th>
+							{:else}
+								{#each g.cols as _c}
+									<th class="px-1 py-1.5" style="background: #383832;"></th>
+								{/each}
+							{/if}
+						{/each}
+					</tr>
+					<!-- Row 2: Sub-column labels -->
+					<tr style="background: #ebe8dd;">
+						{#each allocColGroups as g}
+							{#each g.cols as col}
+								<th class="text-{col.align} pt-1.5 px-2 text-[10px] font-black uppercase"
+									style="border-bottom: 0; {g.color ? 'border-left: 1px solid #d5d2c7;' : ''} {col.key === 'alloc' ? 'color: #ff9d00;' : col.key === 'center' ? 'color: #006f7c;' : ''}">{col.label}</th>
+							{/each}
+						{/each}
+					</tr>
+					<!-- Row 3: Formula hints -->
+					<tr style="background: #ebe8dd;">
+						{#each allocColGroups as g}
+							{#each g.cols as col}
+								<th class="text-{col.align} pb-1.5 px-2 font-normal text-[7px]"
+									style="border-bottom: 2px solid #383832; color: #65655e; font-style: italic; {g.color ? 'border-left: 1px solid #d5d2c7;' : ''}">{col.formula}</th>
+							{/each}
+						{/each}
+					</tr>
+				</thead>
+				<tbody>
+					<!-- AVG/TOTAL summary row -->
+					{#if filteredAllocated.length > 0}
+					{@const an = filteredAllocated.length || 1}
+					{@const aSum = (key: string) => filteredAllocated.reduce((s: number, r: any) => s + (r[key] || 0), 0)}
+					{@const aAvg = (key: string) => aSum(key) / an}
+					{@const avgAllocBuf = aAvg('buffer')}
+					{@const avgAllocBufColor = avgAllocBuf >= 7 ? '#007518' : avgAllocBuf >= 3 ? '#ff9d00' : '#be2d06'}
+					<tr class="sticky-avg" style="background: #383832; color: #feffd6; border-bottom: 3px solid #383832; position: sticky; top: 80px; z-index: 5;">
+						<td class="py-2 px-2 font-black sticky-col-0" style="background: #383832;">AVG / TOTAL</td>
+						<td class="py-2 px-2 text-center text-[9px] sticky-col-1" style="background: #383832;">{an} sites</td>
+						<td class="py-2 px-2 text-center">—</td>
+						<td class="py-2 px-2 text-center font-mono" style="color: #ff9d00;">{aAvg('allocation_pct').toFixed(1)}%</td>
+						<!-- Price + Buffer -->
+						<td class="py-2 px-2 text-center font-mono">{fmtN(aAvg('price'))}</td>
+						<td class="py-2 px-2 text-center font-bold" style="color: {avgAllocBufColor};">{avgAllocBuf.toFixed(1)}d</td>
+						<!-- Blackout: 1D, 3D, change -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtDec(aAvg('blackout_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtDec(aAvg('blackout_3d'))}</td>
+						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(aAvg('blackout_1d'), aAvg('blackout_3d'), false).color};">{pctChg(aAvg('blackout_1d'), aAvg('blackout_3d'), false).text}</td>
+						<!-- Tank: 1D, 3D, change -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtN(aSum('tank_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtN(aSum('tank_3d'))}</td>
+						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(aSum('tank_1d'), aSum('tank_3d'), true).color};">{pctChg(aSum('tank_1d'), aSum('tank_3d'), true).text}</td>
+						<!-- Burn: 1D, 3D, change -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtN(aSum('fuel_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtN(aSum('fuel_3d'))}</td>
+						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(aSum('fuel_1d'), aSum('fuel_3d'), false).color};">{pctChg(aSum('fuel_1d'), aSum('fuel_3d'), false).text}</td>
+						<!-- Sales: TOTAL, 1D, 3D, change -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtN(aSum('sales_total'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtN(aSum('sales_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtN(aSum('sales_3d'))}</td>
+						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(aSum('sales_1d'), aSum('sales_3d'), true).color};">{pctChg(aSum('sales_1d'), aSum('sales_3d'), true).text}</td>
+						<!-- Diesel Cost: 1D, 3D, change -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtN(aSum('cost_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtN(aSum('cost_3d'))}</td>
+						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(aSum('cost_1d'), aSum('cost_3d'), false).color};">{pctChg(aSum('cost_1d'), aSum('cost_3d'), false).text}</td>
+						<!-- Diesel %: 1D, 3D, change -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtDec(aAvg('diesel_pct_1d'), 2)}%</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtDec(aAvg('diesel_pct_3d'), 2)}%</td>
+						<td class="py-2 px-2 text-center font-bold text-[10px]" style="color: {pctChg(aAvg('diesel_pct_1d'), aAvg('diesel_pct_3d'), false).color};">{pctChg(aAvg('diesel_pct_1d'), aAvg('diesel_pct_3d'), false).text}</td>
+						<!-- LY BASELINE -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 1px solid #65655e;">{fmtN(aAvg('ly_daily_cost'))}</td>
+						<td class="py-2 px-2 text-center font-mono">{fmtDec(aAvg('ly_pct_on_sales'), 2)}%</td>
+						<!-- CP CENTER RAW (validation) -->
+						<td class="py-2 px-2 text-center font-mono" style="border-left: 2px solid #65655e; color: #94a3b8;">{fmtN(aSum('center_tank_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono" style="color: #94a3b8;">{fmtN(aSum('center_fuel_1d'))}</td>
+						<td class="py-2 px-2 text-center font-mono" style="color: #94a3b8;">{fmtN(aSum('center_cost_1d'))}</td>
+					</tr>
+					{/if}
+					{#each filteredAllocated as s, i}
+						{@const bufVal = s.buffer || 0}
+						{@const bufColor = bufVal >= 7 ? '#007518' : bufVal >= 3 ? '#ff9d00' : '#be2d06'}
+						<tr style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'}; border-bottom: 1px solid #ebe8dd;">
+							<!-- Identity: SITE, NAME, CENTER, ALLOC% -->
+							<td class="py-1.5 px-2 font-bold sticky-col-0" style="color: #383832; background: inherit;">{s.site_id || ''}</td>
+							<td class="py-1.5 px-2 font-mono text-xs sticky-col-1" style="color: #383832; background: inherit;">{s.site_name || ''}</td>
+							<td class="py-1.5 px-2 font-bold text-xs" style="color: #006f7c;">{s.center_id || ''}</td>
+							<td class="py-1.5 px-2 text-center font-bold" style="color: #ff9d00;">{(s.allocation_pct || 0).toFixed(1)}%</td>
+							<!-- Price + Buffer -->
+							<td class="py-1.5 px-2 text-center font-mono">{icon(s.price||0,[3500,5000,8000],true)} {fmt(s.price||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{icon(bufVal,[7,5,3])} {fmtDec(bufVal)}</td>
+							<!-- Blackout: 1D, 3D, change (lower=good) -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7;">{icon(s.blackout_1d||0,[4,8,12],true)} {fmtDec(s.blackout_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{fmtDec(s.blackout_3d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.blackout_1d||0, s.blackout_3d||0, false).color};">{pctChg(s.blackout_1d||0, s.blackout_3d||0, false).text}</td>
+							<!-- Tank: 1D, 3D, change (higher=good) -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7;">{fmt(s.tank_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{fmt(s.tank_3d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.tank_1d||0, s.tank_3d||0, true).color};">{pctChg(s.tank_1d||0, s.tank_3d||0, true).text}</td>
+							<!-- Burn: 1D, 3D, change (lower=good) -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7;">{fmt(s.fuel_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{fmt(s.fuel_3d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.fuel_1d||0, s.fuel_3d||0, false).color};">{pctChg(s.fuel_1d||0, s.fuel_3d||0, false).text}</td>
+							<!-- Sales: TOTAL, 1D, 3D, 1D vs 3D -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7;">{fmt(s.sales_total||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{fmt(s.sales_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{fmt(s.sales_3d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.sales_1d||0, s.sales_3d||0, true).color};">{pctChg(s.sales_1d||0, s.sales_3d||0, true).text}</td>
+							<!-- Diesel Cost: 1D, 3D, 1D vs 3D -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7;">{fmt(s.cost_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono">{fmt(s.cost_3d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.cost_1d||0, s.cost_3d||0, false).color};">{pctChg(s.cost_1d||0, s.cost_3d||0, false).text}</td>
+							<!-- Diesel % SALES: 1D, 3D, 1D vs 3D -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7; color: {(s.diesel_pct_1d||0) > 3 ? '#be2d06' : (s.diesel_pct_1d||0) > 1.5 ? '#ff9d00' : '#007518'};">{icon(s.diesel_pct_1d||0,[0.9,1.5,3],true)} {fmtDec(s.diesel_pct_1d||0,2)}%</td>
+							<td class="py-1.5 px-2 text-center font-mono" style="color: {(s.diesel_pct_3d||0) > 3 ? '#be2d06' : (s.diesel_pct_3d||0) > 1.5 ? '#ff9d00' : '#007518'};">{icon(s.diesel_pct_3d||0,[0.9,1.5,3],true)} {fmtDec(s.diesel_pct_3d||0,2)}%</td>
+							<td class="py-1.5 px-2 text-center font-bold text-[10px]" style="color: {pctChg(s.diesel_pct_1d||0, s.diesel_pct_3d||0, false).color};">{pctChg(s.diesel_pct_1d||0, s.diesel_pct_3d||0, false).text}</td>
+							<!-- LY BASELINE -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 1px solid #d5d2c7; color: #65655e;">{fmt(s.ly_daily_cost || 0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono" style="color: #65655e;">{fmtDec(s.ly_pct_on_sales || 0, 2)}%</td>
+							<!-- CP CENTER RAW (validation) -->
+							<td class="py-1.5 px-2 text-center font-mono" style="border-left: 2px solid #65655e; color: #65655e;">{fmt(s.center_tank_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono" style="color: #65655e;">{fmt(s.center_fuel_1d||0)}</td>
+							<td class="py-1.5 px-2 text-center font-mono" style="color: #65655e;">{fmt(s.center_cost_1d||0)}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+		<!-- Legend -->
+		<div class="px-4 py-2 flex gap-4 text-[10px]" style="background: #ebe8dd; border-top: 1px solid #383832; color: #65655e;">
+			<span>{'\u{1F7E2}'} Good</span>
+			<span>{'\u{1F7E1}'} Watch</span>
+			<span>{'\u{1F7E0}'} Warning</span>
+			<span>{'\u{1F534}'} Danger</span>
+			<span class="ml-auto text-[9px]">ALLOC% = store's share of center diesel | Blackout &amp; Gen Hr = 100% center (shared) | Tank &amp; Fuel = allocated by ALLOC%</span>
+		</div>
+	<!-- What each column means -->
+	<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+		<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+		<table class="w-full text-[10px]" style="border-collapse: collapse;">
+			<thead>
+				<tr style="background: #ebe8dd;">
+					<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+					<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">SITE</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Store site ID</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">NAME</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Store name</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">CENTER</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Which CP shopping center provides the generator</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">ALLOC%</td>
+					<td class="py-1.5 px-2" style="color: #383832;">What percentage of the center's diesel cost is charged to this store (e.g., 15% = store pays 15% of center's total fuel)</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #383832;">PRICE/L, BUFFER, BLACKOUT HR</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Same as SECTOR_SITES but sourced from the CP center</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #007518;">TANK/FUEL allocated</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Center's total &times; ALLOC% &mdash; this store's share of diesel</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #006f7c;">SALES</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Store's own sales revenue</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #9d4867;">DIESEL COST</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Allocated diesel cost = allocated fuel &times; CP price</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #be2d06;">DIESEL %</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Store's allocated diesel cost as % of its own sales</td>
+				</tr>
+				<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #65655e;">LY BASELINE</td>
+					<td class="py-1.5 px-2" style="color: #383832;">Last year comparison</td>
+				</tr>
+				<tr style="border-bottom: 1px solid #ebe8dd;">
+					<td class="py-1.5 px-2 font-bold" style="color: #65655e;">CP CENTER (100% RAW)</td>
+					<td class="py-1.5 px-2" style="color: #383832;">The center's full unallocated numbers &mdash; for verification</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+	<!-- How to use -->
+	<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+		<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+		<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+			These stores don't have their own generators &mdash; they share a CP center's generator. The cost is split by <span class="font-bold" style="color: #383832;">ALLOC%</span>. If a store's <span class="font-bold" style="color: #383832;">DIESEL %</span> is high, consider reducing its allocation or adjusting operating hours. Compare allocated cost against <span class="font-bold" style="color: #383832;">CP CENTER RAW</span> to verify the split looks right.
+		</div>
+	</div>
+	</div>
+	{/if}
+</div>
 {/if}
 
 <!-- Formula Reference -->
@@ -623,3 +1110,20 @@
 		</table>
 	</div>
 </div>
+
+<style>
+	/* Sticky columns and rows for data tables */
+	.sticky-table { border-collapse: separate; border-spacing: 0; }
+	.sticky-col-0 { position: sticky; left: 0; z-index: 1; min-width: 120px; max-width: 140px; }
+	.sticky-col-1 { position: sticky; left: 120px; z-index: 1; min-width: 100px; max-width: 120px; box-shadow: 2px 0 4px rgba(0,0,0,0.08); }
+	/* AVG row */
+	.sticky-avg td { position: sticky; }
+	.sticky-avg .sticky-col-0 { z-index: 6; }
+	.sticky-avg .sticky-col-1 { z-index: 6; }
+	/* Header sticky cols need higher z */
+	.sticky-table thead th:nth-child(1) { position: sticky; left: 0; z-index: 12; min-width: 120px; }
+	.sticky-table thead th:nth-child(2) { position: sticky; left: 120px; z-index: 12; min-width: 100px; box-shadow: 2px 0 4px rgba(0,0,0,0.08); }
+	/* Data row sticky cols inherit bg */
+	.sticky-table tbody td.sticky-col-0,
+	.sticky-table tbody td.sticky-col-1 { background: inherit; }
+</style>

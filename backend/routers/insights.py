@@ -1,4 +1,5 @@
 """Insights router — operating modes, delivery queue, BCP scores, alerts, fuel intel, recommendations."""
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, Query
 import numpy as np
@@ -23,6 +24,23 @@ def _df(df):
     return df.fillna("").to_dict(orient="records")
 
 
+def _enrich_site_code(df):
+    """Add site_code (region) column from sites table if df has site_id."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    if "site_id" not in df.columns:
+        return df
+    try:
+        with get_db() as conn:
+            sites = pd.read_sql_query("SELECT site_id, region as site_code FROM sites", conn)
+        df = df.merge(sites, on="site_id", how="left")
+        df["site_code"] = df["site_code"].fillna("")
+    except Exception:
+        if "site_code" not in df.columns:
+            df["site_code"] = ""
+    return df
+
+
 def _sanitize(obj):
     """Recursively replace NaN/Inf floats with 0 so JSON serialization never fails."""
     import math
@@ -43,56 +61,6 @@ def _sanitize(obj):
     if isinstance(obj, (np.integer,)):
         return int(obj)
     return obj
-
-
-# ---------- 1. Operating Modes ----------
-
-@router.get("/operating-modes")
-def operating_modes(user: dict = Depends(get_current_user)):
-    try:
-        from models.decision_engine import get_operating_modes
-        result = get_operating_modes()
-        return {"modes": _df(result)}
-    except Exception:
-        return {"modes": []}
-
-
-# ---------- 2. Delivery Queue ----------
-
-@router.get("/delivery-queue")
-def delivery_queue(user: dict = Depends(get_current_user)):
-    try:
-        from models.decision_engine import get_delivery_queue
-        result = get_delivery_queue()
-        return {"queue": _df(result)}
-    except Exception:
-        return {"queue": []}
-
-
-# ---------- 3. BCP Scores ----------
-
-@router.get("/bcp-scores")
-def bcp_scores(user: dict = Depends(get_current_user)):
-    try:
-        from models.bcp_engine import compute_bcp_scores, get_grade_distribution
-        scores = compute_bcp_scores()
-        distribution = get_grade_distribution()
-        return {"scores": _df(scores), "distribution": distribution}
-    except Exception:
-        return {"scores": [], "distribution": {}}
-
-
-# ---------- 4. Stockout Forecast ----------
-
-@router.get("/stockout-forecast")
-def stockout_forecast(user: dict = Depends(get_current_user)):
-    try:
-        from models.buffer_predictor import predict_buffer_depletion, get_critical_sites
-        all_sites = predict_buffer_depletion()
-        critical = get_critical_sites()
-        return {"forecast": _df(all_sites), "critical": _df(critical)}
-    except Exception:
-        return {"forecast": [], "critical": []}
 
 
 # ---------- 5. Recommendations ----------
@@ -237,8 +205,8 @@ def fuel_intel(user: dict = Depends(get_current_user)):
                        ORDER BY date DESC LIMIT 50""",
                     conn,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Error in fuel purchase log query: {e}")
 
         return {
             "buy_signal": signal_result,
@@ -258,36 +226,44 @@ def fuel_intel(user: dict = Depends(get_current_user)):
 # ---------- 8. Yesterday Comparison ----------
 
 @router.get("/yesterday-comparison")
-def yesterday_comparison(user: dict = Depends(get_current_user)):
+def yesterday_comparison(site_type: Optional[str] = None, user: dict = Depends(get_current_user)):
     try:
         metrics = []
+        type_filter = ""
+        type_params = []
+        type_join = ""
+        if site_type and site_type != 'All':
+            type_join = " JOIN sites s ON dss.site_id = s.site_id"
+            type_filter = " AND s.site_type = ?"
+            type_params = [site_type]
+
         with get_db() as conn:
             # Use daily_site_summary for consistency with all other endpoints
-            yesterday = pd.read_sql_query(
-                """SELECT
+            yesterday = pd.read_sql_query(f"""
+                SELECT
                        SUM(dss.total_daily_used) AS burn,
                        SUM(dss.spare_tank_balance) AS tank,
                        SUM(dss.blackout_hr) AS blackout_hr
-                   FROM daily_site_summary dss
-                   WHERE dss.date = (SELECT MAX(date) FROM daily_site_summary)""",
-                conn,
+                   FROM daily_site_summary dss{type_join}
+                   WHERE dss.date = (SELECT MAX(date) FROM daily_site_summary){type_filter}""",
+                conn, params=type_params,
             )
 
             # 3-day avg (prior 3 days, excluding latest)
-            avg_3d = pd.read_sql_query(
-                """SELECT
+            avg_3d = pd.read_sql_query(f"""
+                SELECT
                        SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) AS burn,
                        SUM(dss.blackout_hr) / COUNT(DISTINCT dss.date) AS blackout_hr
-                   FROM daily_site_summary dss
+                   FROM daily_site_summary dss{type_join}
                    WHERE dss.date >= (SELECT date(MAX(date), '-3 days') FROM daily_site_summary)
-                     AND dss.date < (SELECT MAX(date) FROM daily_site_summary)""",
-                conn,
+                     AND dss.date < (SELECT MAX(date) FROM daily_site_summary){type_filter}""",
+                conn, params=type_params,
             )
 
             # Buffer: last_day_tank / 3d_avg_fuel
-            y_tank = float(yesterday["tank"].iloc[0] or 0)
-            y_burn = float(yesterday["burn"].iloc[0] or 0)
-            a_burn = float(avg_3d["burn"].iloc[0] or 0)
+            y_tank = float(yesterday["tank"].iloc[0] or 0) if not yesterday.empty else 0
+            y_burn = float(yesterday["burn"].iloc[0] or 0) if not yesterday.empty else 0
+            a_burn = float(avg_3d["burn"].iloc[0] or 0) if not avg_3d.empty else 0
             y_buffer = y_tank / a_burn if a_burn > 0 else (y_tank / y_burn if y_burn > 0 else 0)
 
             # Cost via date-specific price lookup
@@ -297,24 +273,24 @@ def yesterday_comparison(user: dict = Depends(get_current_user)):
             a_cost = 0
             if max_date:
                 # Per-sector cost for yesterday
-                sector_fuels = pd.read_sql_query("""
+                sector_fuels = pd.read_sql_query(f"""
                     SELECT s.sector_id, SUM(dss.total_daily_used) as fuel
                     FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id
-                    WHERE dss.date = ? GROUP BY s.sector_id
-                """, conn, params=[max_date])
+                    WHERE dss.date = ?{type_filter} GROUP BY s.sector_id
+                """, conn, params=[max_date] + type_params)
                 for _, r in sector_fuels.iterrows():
                     from backend.routers.data import _sector_price_on_date
                     p = _sector_price_on_date(conn, r["sector_id"], max_date)
                     y_cost += (r["fuel"] or 0) * p
 
                 # Per-sector cost for 3d avg
-                sector_fuels_3d = pd.read_sql_query("""
+                sector_fuels_3d = pd.read_sql_query(f"""
                     SELECT s.sector_id,
                            SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as fuel
                     FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id
-                    WHERE dss.date >= date(?, '-3 days') AND dss.date < ?
+                    WHERE dss.date >= date(?, '-3 days') AND dss.date < ?{type_filter}
                     GROUP BY s.sector_id
-                """, conn, params=[max_date, max_date])
+                """, conn, params=[max_date, max_date] + type_params)
                 for _, r in sector_fuels_3d.iterrows():
                     p = _sector_price_on_date(conn, r["sector_id"], max_date)
                     a_cost += (r["fuel"] or 0) * p
@@ -324,17 +300,17 @@ def yesterday_comparison(user: dict = Depends(get_current_user)):
             # Override yesterday values
             yesterday = pd.DataFrame([{
                 "burn": y_burn, "buffer": y_buffer,
-                "cost": y_cost, "blackout_hr": float(yesterday["blackout_hr"].iloc[0] or 0)
+                "cost": y_cost, "blackout_hr": float(yesterday["blackout_hr"].iloc[0] or 0) if not yesterday.empty else 0
             }])
             avg_3d = pd.DataFrame([{
                 "burn": a_burn, "buffer": a_buffer,
-                "cost": a_cost, "blackout_hr": float(avg_3d["blackout_hr"].iloc[0] or 0)
+                "cost": a_cost, "blackout_hr": float(avg_3d["blackout_hr"].iloc[0] or 0) if not avg_3d.empty else 0
             }])
 
         for col, label in [("burn", "BURN"), ("buffer", "BUFFER"),
                            ("cost", "COST"), ("blackout_hr", "BLACKOUT_HR")]:
-            y_val = float(yesterday[col].iloc[0] or 0)
-            a_val = float(avg_3d[col].iloc[0] or 0)
+            y_val = float(yesterday[col].iloc[0] or 0) if not yesterday.empty else 0
+            a_val = float(avg_3d[col].iloc[0] or 0) if not avg_3d.empty else 0
             if a_val:
                 pct = round((y_val - a_val) / a_val * 100, 1)
             else:
@@ -374,15 +350,17 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
             sector_sql = " ".join(filter_clauses)
             if date_to:
                 # Use the provided end date, but find the actual max date <= date_to
-                max_date = conn.execute(
+                _row = conn.execute(
                     f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id WHERE dss.date <= ? {sector_sql}",
                     [date_to] + filter_params
-                ).fetchone()[0]
+                ).fetchone()
+                max_date = _row[0] if _row else None
             else:
-                max_date = conn.execute(
+                _row = conn.execute(
                     f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id = s.site_id WHERE 1=1 {sector_sql}",
                     filter_params
-                ).fetchone()[0]
+                ).fetchone()
+                max_date = _row[0] if _row else None
             if not max_date:
                 return {"last_day": None, "last_3d": None, "max_date": None}
 
@@ -467,27 +445,32 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                 sales_date_filter = date_filter.replace('dss.','').replace('s.','')
                 sales_q = f"SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE {sales_date_filter}"
                 sector_sales_filter = " AND sector_id = ?" if sector else ""
-                sector_sales_params = [sector] if sector else []
+                sector_sales_params = list(date_params or [])
+                if sector:
+                    sector_sales_params.append(sector)
                 try:
-                    sales = conn.execute(sales_q + sector_sales_filter, sector_sales_params).fetchone()[0] / max(n_days, 1)
+                    _row = conn.execute(sales_q + sector_sales_filter, sector_sales_params).fetchone()
+                    sales = (_row[0] if _row else 0) / max(n_days, 1)
                 except Exception:
                     sales = 0
                 # Fallback: if no sales on exact date, try latest available sales date
                 if sales == 0:
                     try:
-                        max_sales_date = conn.execute(
+                        _row = conn.execute(
                             f"SELECT MAX(date) FROM daily_sales WHERE sales_amt > 0{sector_sales_filter}",
                             sector_sales_params
-                        ).fetchone()[0]
+                        ).fetchone()
+                        max_sales_date = _row[0] if _row else None
                         if max_sales_date:
-                            fallback_sales = conn.execute(
+                            _row = conn.execute(
                                 f"SELECT COALESCE(SUM(sales_amt),0) FROM daily_sales WHERE date = ?{sector_sales_filter}",
                                 [max_sales_date] + sector_sales_params
-                            ).fetchone()[0]
+                            ).fetchone()
+                            fallback_sales = _row[0] if _row else 0
                             if fallback_sales > 0:
                                 sales = fallback_sales
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.error(f"Error in fallback sales query: {e}")
                 diesel_pct = (cost / sales * 100) if sales > 0 else 0
                 # Blackout per site per day (SUM-based: total_blackout / sites / days)
                 blackout = total_blackout / max(n_sites, 1) / max(n_days, 1) if total_blackout > 0 else 0
@@ -507,7 +490,8 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                 if pd.isna(efficiency): efficiency = 0
                 # Total sites in system (for data quality)
                 total_sites_q = f"SELECT COUNT(*) FROM sites s WHERE 1=1 {sector_sql}"
-                total_sites_in_system = conn.execute(total_sites_q, filter_params).fetchone()[0]
+                _row = conn.execute(total_sites_q, filter_params).fetchone()
+                total_sites_in_system = _row[0] if _row else 0
                 sites_not_reported = total_sites_in_system - n_sites
                 # Sites with missing tank
                 tank_missing = int((latest["spare_tank_balance"].fillna(0) == 0).sum()) if not latest.empty else 0
@@ -532,6 +516,7 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                     "blackout_per_site": round(blackout_per_site, 1),
                     "efficiency": round(efficiency, 1),
                     "fuel_price": round(price),
+                    "stock_value": round(tank * price),
                     "crit": crit, "warn": warn, "safe": safe, "no_data": max(no_data, 0),
                     "sales": round(sales), "diesel_pct": round(diesel_pct, 2),
                     "has_sales": sales > 0,
@@ -592,8 +577,8 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                             "crit": s_crit, "status": status,
                             "total_gens": total_gens, "running_gens": running_gens,
                         })
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.error(f"Error in sector snapshot aggregation: {e}")
 
             # Operating mode counts
             op_modes = {"OPEN": 0, "MONITOR": 0, "REDUCE": 0, "CLOSE": 0}
@@ -607,8 +592,8 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                         col = "operating_mode" if "operating_mode" in modes_df.columns else "mode"
                         if col in modes_df.columns:
                             op_modes[m] = int((modes_df[col].str.upper() == m).sum())
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(f"Error in operating modes import: {e}")
 
             # Recent daily totals for sparklines (4 days: 3 prior + latest)
             recent_daily = []
@@ -637,8 +622,8 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                     sdf = pd.read_sql_query(sales_sql, conn, params=sales_params)
                     for _, sr in sdf.iterrows():
                         sales_by_date[sr["date"]] = float(sr["sales"] or 0)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.error(f"Error in sales by date query: {e}")
                 # Get sector prices for cost calculation
                 sector_prices = {}
                 for pr in conn.execute("SELECT sector_id, price_per_liter FROM fuel_purchases WHERE price_per_liter IS NOT NULL GROUP BY sector_id HAVING date = MAX(date)").fetchall():
@@ -661,9 +646,10 @@ def period_kpis(sector: Optional[str] = None, date_to: Optional[str] = None, sit
                         "sites": int(r["sites"]),
                         "sales": round(day_sales), "cost": day_cost,
                         "diesel_pct": day_dpct,
+                        "stock_value": round(t * price),
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(f"Error in recent daily aggregation: {e}")
 
             # Story line — auto-generated narrative
             story = []
@@ -706,7 +692,7 @@ def generator_risk(user: dict = Depends(get_current_user)):
     try:
         from models.decision_engine import get_generator_failure_risk
         result = get_generator_failure_risk()
-        return {"generators": _df(result)}
+        return {"generators": _df(_enrich_site_code(result))}
     except Exception:
         return {"generators": []}
 
@@ -747,7 +733,7 @@ def transfers(user: dict = Depends(get_current_user)):
         from models.decision_engine import get_resource_sharing_opportunities, get_load_optimization
         transfers = get_resource_sharing_opportunities()
         load_opt = get_load_optimization()
-        return {"transfers": transfers if isinstance(transfers, list) else _df(transfers), "load_optimization": _df(load_opt)}
+        return {"transfers": transfers if isinstance(transfers, list) else _df(_enrich_site_code(transfers)), "load_optimization": _df(_enrich_site_code(load_opt))}
     except Exception:
         return {"transfers": [], "load_optimization": []}
 
@@ -807,7 +793,7 @@ def break_even(user: dict = Depends(get_current_user)):
 # ---------- 14. Sector Sites ----------
 
 @router.get("/sector-sites")
-def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = Depends(get_current_user)):
+def sector_sites(sector: Optional[str] = None, site_type: Optional[str] = None, lookback: int = 3, user: dict = Depends(get_current_user)):
     """All sites with threshold indicators using N-day lookback for averages."""
     try:
         # Load formula settings
@@ -818,11 +804,14 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                 try:
                     settings = json.loads(raw[0])
                     lookback = settings.get("lookback_days", lookback)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.error(f"Error parsing formula_engine settings: {e}")
 
             sector_sql = "AND s.sector_id = ?" if sector else ""
             sector_params = [sector] if sector else []
+            if site_type and site_type != 'All':
+                sector_sql += " AND s.site_type = ?"
+                sector_params.append(site_type)
 
             # Get last N days of data (for averages) + last day tank (for buffer)
             lookback_days_val = max(lookback-1, 0)
@@ -868,6 +857,7 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                     WHERE date = (SELECT MAX(date) FROM daily_site_summary)
                 ) last_data ON s.site_id = last_data.site_id
                 WHERE 1=1 {sector_sql}
+                AND s.cost_center_code NOT IN (SELECT store_cost_center FROM store_center_allocation)
                 ORDER BY s.sector_id, s.site_id
             """, conn, params=sector_params)
 
@@ -888,7 +878,8 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
             """, conn)
 
             # Get last day sales per site
-            max_sales_date = conn.execute("SELECT MAX(date) FROM daily_sales WHERE site_id IS NOT NULL").fetchone()[0]
+            _row = conn.execute("SELECT MAX(date) FROM daily_sales WHERE site_id IS NOT NULL").fetchone()
+            max_sales_date = _row[0] if _row else None
             last_day_sales = pd.DataFrame()
             avg3d_sales = pd.DataFrame()
             if max_sales_date:
@@ -910,13 +901,22 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
             # Get LY expense per site
             ly = pd.read_sql_query("SELECT cost_center_code, pct_on_sales FROM diesel_expense_ly", conn)
 
+            # Get LY baseline data (daily_avg_expense and pct_on_sales)
+            ly_data = {}
+            ly_rows = conn.execute("""
+                SELECT cost_center_code, daily_avg_expense_mmk, pct_on_sales
+                FROM diesel_expense_ly
+            """).fetchall()
+            for r in ly_rows:
+                ly_data[r[0]] = {"ly_daily_cost": r[1] or 0, "ly_pct_on_sales": (r[2] or 0) * 100}
+
             # Load thresholds from settings
             thresholds = {"exp_open": 5, "exp_monitor": 15, "exp_reduce": 30, "exp_close": 60}
             if raw and raw[0]:
                 try:
                     thresholds.update(json.loads(raw[0]).get("thresholds", {}))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.error(f"Error parsing threshold settings: {e}")
 
             if not df.empty:
                 df["price"] = df["sector_id"].map(prices).fillna(0)
@@ -970,12 +970,21 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                     lambda x: "CLOSE" if x > t.get("exp_close", 60) else "REDUCE" if x > t.get("exp_reduce", 30) else "MONITOR" if x > t.get("exp_monitor", 15) else "OPEN"
                 )
 
+                # Add LY baseline columns
+                df["ly_daily_cost"] = df["cost_center_code"].map(
+                    lambda cc: round(ly_data.get(str(cc), {}).get("ly_daily_cost", 0), 0)
+                )
+                df["ly_pct_on_sales"] = df["cost_center_code"].map(
+                    lambda cc: round(ly_data.get(str(cc), {}).get("ly_pct_on_sales", 0), 2)
+                )
+
                 df = df.fillna(0).round(2)
 
             # Sector-level 3d avg fuel for correct summary buffer (matches heatmap formula)
             sector_3d_avg_fuel = {}
             try:
-                max_dt = conn.execute("SELECT MAX(date) FROM daily_site_summary").fetchone()[0]
+                _row = conn.execute("SELECT MAX(date) FROM daily_site_summary").fetchone()
+                max_dt = _row[0] if _row else None
                 if max_dt:
                     s3d = pd.read_sql_query("""
                         SELECT s.sector_id,
@@ -986,8 +995,8 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
                     """, conn, params=[max_dt, max_dt])
                     for _, r in s3d.iterrows():
                         sector_3d_avg_fuel[r["sector_id"]] = round(r["avg_fuel_3d"], 1)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.error(f"Error in sector 3d avg fuel query: {e}")
 
         return {"sites": _df(df), "count": len(df), "sector_3d_avg_fuel": sector_3d_avg_fuel}
     except Exception as e:
@@ -999,12 +1008,20 @@ def sector_sites(sector: Optional[str] = None, lookback: int = 3, user: dict = D
 @router.get("/monthly-summary")
 def monthly_summary(
     sector: Optional[str] = None,
+    site_type: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     try:
         with get_db() as conn:
-            sq = " AND site_id IN (SELECT site_id FROM sites WHERE sector_id = ?)" if sector else ""
-            sp = [sector] if sector else []
+            site_conditions = []
+            sp = []
+            if sector:
+                site_conditions.append("sector_id = ?")
+                sp.append(sector)
+            if site_type and site_type != 'All':
+                site_conditions.append("site_type = ?")
+                sp.append(site_type)
+            sq = (" AND site_id IN (SELECT site_id FROM sites WHERE " + " AND ".join(site_conditions) + ")") if site_conditions else ""
             months = pd.read_sql_query(f"""
                 SELECT strftime('%Y-%m', date) as month,
                        SUM(total_daily_used) as fuel, COUNT(DISTINCT date) as days,
@@ -1018,7 +1035,7 @@ def monthly_summary(
             bo = pd.read_sql_query(f"""
                 SELECT strftime('%Y-%m', do.date) as month, AVG(do.blackout_hr) as avg_bo
                 FROM daily_operations do
-                WHERE do.blackout_hr IS NOT NULL{' AND do.site_id IN (SELECT site_id FROM sites WHERE sector_id = ?)' if sector else ''}
+                WHERE do.blackout_hr IS NOT NULL{sq.replace('site_id', 'do.site_id')}
                 GROUP BY month
             """, conn, params=sp)
 
@@ -1050,12 +1067,20 @@ def monthly_summary(
 @router.get("/blackout-calendar")
 def blackout_calendar(
     sector: Optional[str] = None,
+    site_type: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     try:
         with get_db() as conn:
-            sq = " AND do.site_id IN (SELECT site_id FROM sites WHERE sector_id = ?)" if sector else ""
-            sp = [sector] if sector else []
+            bo_conditions = []
+            sp = []
+            if sector:
+                bo_conditions.append("sector_id = ?")
+                sp.append(sector)
+            if site_type and site_type != 'All':
+                bo_conditions.append("site_type = ?")
+                sp.append(site_type)
+            sq = (" AND do.site_id IN (SELECT site_id FROM sites WHERE " + " AND ".join(bo_conditions) + ")") if bo_conditions else ""
             df = pd.read_sql_query(f"""
                 SELECT do.date, AVG(do.blackout_hr) as avg_bo
                 FROM daily_operations do
@@ -1189,3 +1214,246 @@ def site_info(site_id: str, user: dict = Depends(get_current_user)):
             return dict(row)
     except Exception:
         return {}
+
+
+# ---------- 20. Allocated Sites (CP Center Allocation) ----------
+
+@router.get("/sector-sites/allocated")
+def get_allocated_sites(
+    date_to: str = None,
+    site_type: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Get CMHL sites that use CP center allocation.
+    Returns the SAME field structure as /sector-sites plus center_id, center_name, allocation_pct.
+    """
+    with get_db() as conn:
+        # Get allocation mappings
+        alloc_type_filter = ""
+        alloc_type_params = []
+        if site_type and site_type != 'All':
+            alloc_type_filter = " WHERE s.site_type = ?"
+            alloc_type_params = [site_type]
+        allocs = conn.execute(f"""
+            SELECT a.store_cost_center, a.store_name, a.center_cost_center,
+                   a.center_name, a.allocation_pct,
+                   s.site_id, s.site_name, s.cost_center_code, s.sector_id,
+                   s.site_type, s.company, s.region, s.segment_name,
+                   s.cost_center_description, s.address_state, s.address_township,
+                   s.store_size, s.channel, s.latitude, s.longitude
+            FROM store_center_allocation a
+            LEFT JOIN sites s ON a.store_cost_center = s.cost_center_code
+            {alloc_type_filter}
+        """, alloc_type_params).fetchall()
+
+        if not allocs:
+            return []
+
+        # Get latest ops date
+        _row = conn.execute("SELECT MAX(date) FROM daily_site_summary").fetchone()
+        max_date = date_to or (_row[0] if _row else None)
+        if not max_date:
+            return []
+
+        # Get CP price
+        cp_price = conn.execute(
+            "SELECT price_per_liter FROM fuel_purchases WHERE sector_id='CP' ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        price = cp_price[0] if cp_price else 0
+
+        # Get latest sales date for CMHL
+        _row = conn.execute("SELECT MAX(date) FROM daily_sales WHERE sector_id='CMHL'").fetchone()
+        max_sales = _row[0] if _row else None
+
+        result = []
+        for row in allocs:
+            store_cc = row[0]
+            center_cc = row[2]
+            center_name = row[3]
+            alloc_pct = row[4]
+            site_id = row[5]
+            site_name = row[6] or row[1]
+            cost_center_code = row[7] or store_cc
+
+            if not site_id:
+                continue  # store not in DB
+
+            a = alloc_pct / 100
+
+            # Center latest data
+            c = conn.execute("""
+                SELECT total_gen_run_hr, total_daily_used, blackout_hr, spare_tank_balance
+                FROM daily_site_summary WHERE site_id = ? AND date = ?
+            """, (center_cc, max_date)).fetchone()
+
+            # Center 3d avg data (fuel, tank, gen_hr, blackout)
+            c3 = conn.execute("""
+                SELECT AVG(total_daily_used), AVG(spare_tank_balance),
+                       AVG(total_gen_run_hr), AVG(blackout_hr)
+                FROM (
+                    SELECT total_daily_used, spare_tank_balance, total_gen_run_hr, blackout_hr
+                    FROM daily_site_summary
+                    WHERE site_id = ? AND date >= date(?, '-3 days') AND date < ?
+                    ORDER BY date DESC
+                )
+            """, (center_cc, max_date, max_date)).fetchone()
+
+            if c:
+                ctr_gen_hr_1d = c[0] or 0
+                ctr_fuel_1d = c[1] or 0
+                ctr_bo_1d = c[2] or 0
+                ctr_tank_1d = c[3] or 0
+            else:
+                ctr_gen_hr_1d = ctr_fuel_1d = ctr_bo_1d = ctr_tank_1d = 0
+
+            ctr_fuel_3d = (c3[0] or 0) if c3 else 0
+            ctr_tank_3d = (c3[1] or 0) if c3 else 0
+            ctr_gen_hr_3d = (c3[2] or 0) if c3 else 0
+            ctr_bo_3d = (c3[3] or 0) if c3 else 0
+
+            # Blackout: 100% shared (not allocated)
+            blackout_1d = ctr_bo_1d
+            blackout_3d = ctr_bo_3d
+
+            # Gen Hr: 100% shared (not allocated)
+            gen_hr_1d = ctr_gen_hr_1d
+            gen_hr_3d = ctr_gen_hr_3d
+
+            # Tank: allocated
+            tank_1d = ctr_tank_1d * a
+            tank_3d = ctr_tank_3d * a
+
+            # Fuel: allocated
+            fuel_1d = ctr_fuel_1d * a
+            fuel_3d = ctr_fuel_3d * a
+
+            # Buffer = allocated tank_1d / allocated fuel_3d
+            buffer = round(tank_1d / fuel_3d, 1) if fuel_3d > 0 else 0
+
+            # Efficiency = center fuel / center gen_hr (physical rate, NOT allocated)
+            efficiency = round(ctr_fuel_1d / ctr_gen_hr_1d, 1) if ctr_gen_hr_1d > 0 else 0
+
+            # Cost
+            cost_1d = fuel_1d * price
+            cost_3d = fuel_3d * price
+
+            # Sales via cost_center_code (same as SECTOR_SITES)
+            sales_1d = 0
+            sales_3d = 0
+            sales_total = 0
+            if max_sales:
+                s1 = conn.execute("""
+                    SELECT COALESCE(SUM(sales_amt), 0) FROM daily_sales
+                    WHERE site_id = ? AND date = ?
+                """, (site_id, max_sales)).fetchone()
+                sales_1d = s1[0] if s1 else 0
+
+                s3 = conn.execute("""
+                    SELECT COALESCE(SUM(sales_amt), 0) / MAX(1, COUNT(DISTINCT date))
+                    FROM daily_sales
+                    WHERE site_id = ? AND date >= date(?, '-3 days') AND date < ?
+                """, (site_id, max_sales, max_sales)).fetchone()
+                sales_3d = s3[0] if s3 else 0
+
+                st = conn.execute("""
+                    SELECT COALESCE(SUM(sales_amt), 0) FROM daily_sales
+                    WHERE site_id = ?
+                """, (site_id,)).fetchone()
+                sales_total = st[0] if st else 0
+
+            # Diesel % of sales
+            diesel_pct_1d = round(cost_1d / sales_1d * 100, 2) if sales_1d > 0 else 0
+            diesel_pct_3d = round(cost_3d / sales_3d * 100, 2) if sales_3d > 0 else 0
+
+            # Margin
+            margin_1d = sales_1d - cost_1d
+            margin_3d = sales_3d - cost_3d
+
+            # Get LY baseline data for this store
+            ly_row = conn.execute(
+                "SELECT daily_avg_expense_mmk, pct_on_sales FROM diesel_expense_ly WHERE cost_center_code = ?",
+                (store_cc,)
+            ).fetchone()
+            ly_daily_cost = round((ly_row[0] or 0), 0) if ly_row else 0
+            ly_pct_on_sales = round((ly_row[1] or 0) * 100, 2) if ly_row else 0
+
+            result.append({
+                "site_id": site_id,
+                "site_name": site_name,
+                "cost_center_code": cost_center_code,
+                "center_id": center_cc,
+                "center_name": center_name,
+                "allocation_pct": alloc_pct,
+                "price": price,
+                # Populated: Blackout Hr, Diesel Cost, Diesel %
+                "blackout_1d": round(blackout_1d, 1),
+                "blackout_3d": round(blackout_3d, 1),
+                "cost_1d": round(cost_1d, 0),
+                "cost_3d": round(cost_3d, 0),
+                "diesel_pct_1d": diesel_pct_1d,
+                "diesel_pct_3d": diesel_pct_3d,
+                # Populated: Sales (needed for diesel % context)
+                "sales_1d": round(sales_1d, 0),
+                "sales_3d": round(sales_3d, 0),
+                "sales_total": round(sales_total, 0),
+                "margin_1d": round(margin_1d, 0),
+                "margin_3d": round(margin_3d, 0),
+                # Not populated — columns kept but empty
+                "gen_hr_1d": None, "gen_hr_3d": None,
+                "tank_1d": None, "tank_3d": None,
+                "fuel_1d": None, "fuel_3d": None,
+                "buffer": None, "efficiency": None,
+                "center_blackout_1d": None, "center_gen_hr_1d": None,
+                "center_tank_1d": None, "center_fuel_1d": None, "center_cost_1d": None,
+                "ly_daily_cost": None, "ly_pct_on_sales": None,
+            })
+
+        return result
+
+
+# ---------- 21. Detect Allocated Sites (4-check logic) ----------
+
+@router.get("/sector-sites/detect-allocated")
+def detect_allocated_sites(user: dict = Depends(get_current_user)):
+    """Detect CMHL stores that need CP center allocation (4-check logic)."""
+    with get_db() as conn:
+        sites = conn.execute("""
+            SELECT s.site_id, s.site_name, s.cost_center_code,
+                g.model_name, g.consumption_per_hour,
+                (SELECT COUNT(*) FROM generators WHERE site_id = s.site_id) as gen_count,
+                (SELECT COALESCE(SUM(total_daily_used), 0) FROM daily_site_summary WHERE site_id = s.site_id) as total_fuel
+            FROM sites s
+            LEFT JOIN generators g ON s.site_id = g.site_id
+            WHERE s.sector_id = 'CMHL'
+            GROUP BY s.site_id
+        """).fetchall()
+
+        detected = []
+        for s in sites:
+            model = s[3] or ''
+            lph = s[4] or 0
+            gens = s[5]
+            fuel = s[6]
+
+            c1 = model in ('UNKNOWN', '')
+            c2 = fuel == 0
+            c3 = lph == 0
+            c4 = gens == 1
+
+            if c1 and c2 and c3 and c4:
+                # Check if already in allocation table
+                existing = conn.execute(
+                    "SELECT allocation_pct, center_cost_center FROM store_center_allocation WHERE store_cost_center = ?",
+                    (s[2],)
+                ).fetchone()
+
+                detected.append({
+                    "site_id": s[0],
+                    "site_name": s[1],
+                    "cost_center_code": s[2],
+                    "mapped": existing is not None,
+                    "allocation_pct": existing[0] if existing else None,
+                    "center_id": existing[1] if existing else None,
+                })
+
+        return detected

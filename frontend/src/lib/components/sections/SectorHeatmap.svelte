@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 
-	let { dateFrom = '', dateTo = '' }: { dateFrom?: string; dateTo?: string } = $props();
+	let { dateFrom = '', dateTo = '', siteType = 'All' }: { dateFrom?: string; dateTo?: string; siteType?: string } = $props();
 
 	let rows: any[] = $state([]);
 	let loading = $state(true);
@@ -14,13 +13,13 @@
 			const p = new URLSearchParams();
 			if (dateFrom) p.set('date_from', dateFrom);
 			if (dateTo) p.set('date_to', dateTo);
+			if (siteType !== 'All') p.set('site_type', siteType);
 			rows = await api.get(`/sector-heatmap?${p}`);
 		} catch (e) { console.error(e); }
 		loading = false;
 	}
 
-	onMount(load);
-	$effect(() => { dateFrom; dateTo; load(); });
+	$effect(() => { dateFrom; dateTo; siteType; load(); });
 
 	function fmt(v: number | null) {
 		if (v === null || v === undefined) return '—';

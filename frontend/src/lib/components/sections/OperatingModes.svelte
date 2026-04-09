@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { api, downloadExcel } from '$lib/api';
 	import { onMount } from 'svelte';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
+	import InfoTip from '$lib/components/InfoTip.svelte';
+	import { KPI } from '$lib/kpi-definitions';
 
-	let { sector = '', company = 'All' }: { sector?: string; company?: string } = $props();
+	let { sector = '', company = 'All', siteType = 'All', sites = [] as string[] }: { sector?: string; company?: string; siteType?: string; sites?: string[] } = $props();
 
 	let modes: any[] = $state([]);
 	let queue: any[] = $state([]);
@@ -57,12 +58,24 @@
 	);
 
 	let fullCount = $derived(modes.filter(m => (m.mode || '').toUpperCase() === 'FULL').length);
-	let reducedCount = $derived(modes.filter(m => ['REDUCE', 'REDUCED', 'MONITOR'].includes((m.mode || '').toUpperCase())).length);
+	let monitorCount = $derived(modes.filter(m => (m.mode || '').toUpperCase() === 'MONITOR').length);
+	let reducedCount = $derived(modes.filter(m => ['REDUCE', 'REDUCED'].includes((m.mode || '').toUpperCase())).length);
 	let closeCount = $derived(modes.filter(m => (m.mode || '').toUpperCase() === 'CLOSE').length);
 	let noDataCount = $derived(modes.filter(m => !m.mode || (m.mode || '').toUpperCase() === 'NO DATA').length);
+	let totalModes = $derived(modes.length || 1);
 
 	let totalLitersNeeded = $derived(queue.reduce((s: number, q: any) => s + (q.liters_needed ?? 0), 0));
 	let totalEstCost = $derived(queue.reduce((s: number, q: any) => s + (q.est_cost ?? 0), 0));
+	let qCritical = $derived(queue.filter((q: any) => (q.urgency || '').toUpperCase() === 'CRITICAL').length);
+	let qHigh = $derived(queue.filter((q: any) => (q.urgency || '').toUpperCase() === 'HIGH').length);
+	let qMedium = $derived(queue.filter((q: any) => (q.urgency || '').toUpperCase() === 'MEDIUM').length);
+	let qLow = $derived(queue.filter((q: any) => (q.urgency || '').toUpperCase() === 'LOW').length);
+
+	let genLow = $derived(generators.filter((g: any) => (g.risk_level || '').toUpperCase() === 'LOW').length);
+	let genMed = $derived(generators.filter((g: any) => (g.risk_level || '').toUpperCase() === 'MEDIUM').length);
+	let genHigh = $derived(generators.filter((g: any) => (g.risk_level || '').toUpperCase() === 'HIGH').length);
+	let genCrit = $derived(generators.filter((g: any) => (g.risk_level || '').toUpperCase() === 'CRITICAL').length);
+	let runningGens = $derived(generators.filter((g: any) => (g.avg_daily_hours ?? 0) > 0).length);
 
 	let avgHoursUntilService = $derived(
 		generators.length > 0
@@ -82,10 +95,11 @@
 		loading = true;
 		error = '';
 		const s = sector ? `?sector=${sector}` : '';
+		const tp = siteType !== 'All' ? `${s ? '&' : '?'}site_type=${siteType}` : '';
 		try {
 			const [m, d] = await Promise.all([
-				api.get(`/operating-modes${s}`).catch(() => []),
-				api.get(`/delivery-queue${s}`).catch(() => []),
+				api.get(`/operating-modes${s}${tp}`).catch(() => []),
+				api.get(`/delivery-queue${s}${tp}`).catch(() => []),
 			]);
 			modes = Array.isArray(m) ? m : m.modes || [];
 			queue = Array.isArray(d) ? d : d.queue || [];
@@ -95,9 +109,9 @@
 		}
 		try {
 			const [g, t, a] = await Promise.all([
-				api.get(`/generator-risk`).catch(() => ({ generators: [] })),
-				api.get(`/transfers`).catch(() => ({ transfers: [], load_optimization: [] })),
-				api.get(`/anomalies`).catch(() => ({ anomalies: [] })),
+				api.get(`/generator-risk${s}${tp}`).catch(() => ({ generators: [] })),
+				api.get(`/transfers${s}${tp}`).catch(() => ({ transfers: [], load_optimization: [] })),
+				api.get(`/anomalies${s}${tp}`).catch(() => ({ anomalies: [] })),
 			]);
 			generators = g.generators || [];
 			transfers = Array.isArray(t.transfers) ? t.transfers : [];
@@ -108,22 +122,31 @@
 	}
 
 	let prevSector = '';
-	onMount(() => { prevSector = sector; load(); });
+	let prevSiteType = '';
+	onMount(() => { prevSector = sector; prevSiteType = siteType; load(); });
 	$effect(() => {
-		if (sector !== prevSector) {
+		if (sector !== prevSector || siteType !== prevSiteType) {
 			prevSector = sector;
+			prevSiteType = siteType;
 			load();
 		}
 	});
 
+	const siteFilteredModes = $derived(sites.length > 0 ? sortedModes.filter(r => sites.includes(r.site_id)) : sortedModes);
+	const siteFilteredQueue = $derived(sites.length > 0 ? sortedQueue.filter(r => sites.includes(r.site_id)) : sortedQueue);
+	const siteFilteredGenerators = $derived(sites.length > 0 ? sortedGenerators.filter(r => sites.includes(r.site_id)) : sortedGenerators);
+	const siteFilteredTransfers = $derived(sites.length > 0 ? transfers.filter(r => sites.includes(r.site_id)) : transfers);
+	const siteFilteredLoadOpt = $derived(sites.length > 0 ? loadOpt.filter(r => sites.includes(r.site_id)) : loadOpt);
+	const siteFilteredAnomalies = $derived(sites.length > 0 ? anomalies.filter(r => sites.includes(r.site_id)) : anomalies);
+
 	let search = $state('');
 	const matchSearch = (r: any) => Object.values(r).some(v => String(v).toLowerCase().includes(search.toLowerCase()));
-	const filteredModes = $derived(search ? sortedModes.filter(matchSearch) : sortedModes);
-	const filteredQueue = $derived(search ? sortedQueue.filter(matchSearch) : sortedQueue);
-	const filteredGenerators = $derived(search ? sortedGenerators.filter(matchSearch) : sortedGenerators);
-	const filteredTransfers = $derived(search ? transfers.filter(matchSearch) : transfers);
-	const filteredLoadOpt = $derived(search ? loadOpt.filter(matchSearch) : loadOpt);
-	const filteredAnomalies = $derived(search ? anomalies.filter(matchSearch) : anomalies);
+	const filteredModes = $derived(search ? siteFilteredModes.filter(matchSearch) : siteFilteredModes);
+	const filteredQueue = $derived(search ? siteFilteredQueue.filter(matchSearch) : siteFilteredQueue);
+	const filteredGenerators = $derived(search ? siteFilteredGenerators.filter(matchSearch) : siteFilteredGenerators);
+	const filteredTransfers = $derived(search ? siteFilteredTransfers.filter(matchSearch) : siteFilteredTransfers);
+	const filteredLoadOpt = $derived(search ? siteFilteredLoadOpt.filter(matchSearch) : siteFilteredLoadOpt);
+	const filteredAnomalies = $derived(search ? siteFilteredAnomalies.filter(matchSearch) : siteFilteredAnomalies);
 
 	// Pagination for Operating Modes table
 	let modesPage = $state(1);
@@ -154,7 +177,6 @@
 	}
 </script>
 
-<AiInsightPanel type="kpi" data={{ tab: 'operations', summary: 'Operating modes (FULL/REDUCED/CLOSE), fuel delivery queue, generator risk levels, fuel transfers, load optimization' }} title="AI INSIGHT — OPERATIONS & FLEET" />
 
 {#if error}
 	<div class="text-center py-4" style="background: #f6f4e9; border: 2px solid #383832;">
@@ -183,28 +205,51 @@
 		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Which sites should reduce generator hours? Who should close?</div>
 	</div>
 	<div style="margin-bottom: 1.5rem;">
-		<!-- KPI Cards -->
-		<div class="grid grid-cols-4 gap-3 mb-3">
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #007518;">{fullCount}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">FULL</div>
-				<span style={badgeStyle('#007518')} class="inline-block mt-1">OPERATIONAL</span>
+		<!-- KPI Card (chart style) -->
+		<div class="mb-3" style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
+			<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
+				<span class="text-[11px] font-black uppercase">OPERATING MODES</span>
+				<span class="text-[10px] font-bold">{modes.length} SITES</span>
+				<InfoTip {...KPI.operations.operatingModes} />
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #ff9d00;">{reducedCount}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">REDUCED / MONITOR</div>
-				<span style={badgeStyle('#ff9d00')} class="inline-block mt-1">CAUTION</span>
+			<div class="flex">
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #007518;">{fullCount}</div>
+					<div class="text-[9px] font-bold" style="color: #007518;">FULL OPS</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #ff9d00;">{monitorCount + reducedCount}</div>
+					<div class="text-[9px] font-bold" style="color: #ff9d00;">REDUCE</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #be2d06;">{closeCount}</div>
+					<div class="text-[9px] font-bold" style="color: #be2d06;">CLOSE</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1;">
+					<div class="text-2xl font-black" style="color: #65655e;">{noDataCount}</div>
+					<div class="text-[9px] font-bold" style="color: #65655e;">NO DATA</div>
+				</div>
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #be2d06;">{closeCount}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">CLOSE</div>
-				<span style={badgeStyle('#be2d06')} class="inline-block mt-1">CRITICAL</span>
+			<div style="border-top: 1px solid #ebe8dd;">
+				{#each [
+					{ label: 'FULL', count: fullCount, color: '#007518' },
+					{ label: 'MONITOR', count: monitorCount, color: '#d97706' },
+					{ label: 'REDUCE', count: reducedCount, color: '#ff9d00' },
+					{ label: 'CLOSE', count: closeCount, color: '#be2d06' },
+					{ label: 'NO DATA', count: noDataCount, color: '#65655e' },
+				] as bar}
+					{#if bar.count > 0}
+						<div class="px-3 py-1 flex items-center gap-2" style="border-top: 1px solid rgba(56,56,50,0.08);">
+							<span class="text-[9px] w-16 shrink-0 font-bold" style="color: {bar.color};">{bar.label}</span>
+							<div class="flex-1 h-4" style="background: #f0ede3;">
+								<div class="h-full" style="width: {bar.count / totalModes * 100}%; background: {bar.color};"></div>
+							</div>
+							<span class="text-[9px] w-6 text-right shrink-0 font-black" style="color: #383832;">{bar.count}</span>
+						</div>
+					{/if}
+				{/each}
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #65655e;">{noDataCount}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">NO DATA</div>
-				<span style={badgeStyle('#65655e')} class="inline-block mt-1">UNKNOWN</span>
-			</div>
+			<div class="px-3 py-1 text-[8px] font-mono" style="background: #f6f4e9; color: #9d9d91; border-top: 1px solid #ebe8dd;">energy% &divide; sales threshold</div>
 		</div>
 
 		<!-- Table -->
@@ -283,6 +328,77 @@
 					</div>
 				{/if}
 			{/if}
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832; width: 110px;">SITE / CODE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Site identifier and sector-store code</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e; width: 220px;">From store master reference data</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Business sector &mdash; CMHL, CP, CFC, or PG</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded blackout file mapping</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">MODE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Current operating recommendation. <span class="font-bold" style="color: #007518;">FULL</span> = run normally, <span class="font-bold" style="color: #ff9d00;">MONITOR</span> = watch closely, <span class="font-bold" style="color: #f95630;">REDUCE</span> = cut generator hours, <span class="font-bold" style="color: #be2d06;">CLOSE</span> = shut down (fuel cost exceeds revenue)</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Diesel% &gt;60% &rarr; CLOSE, &gt;30% &rarr; REDUCE, &gt;15% &rarr; MONITOR, else FULL</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #be2d06;">BUFFER</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Days of fuel remaining. <span class="font-bold" style="color: #be2d06;">Red &lt;3 days = critical</span>, <span class="font-bold" style="color: #ff9d00;">orange 3&ndash;5 days = warning</span>, <span class="font-bold" style="color: #007518;">green &gt;5 days = OK</span></td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Tank balance &divide; average daily fuel consumption</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">TANK</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Current fuel in liters &mdash; how much diesel is physically in the tank right now</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Last reported spare tank balance (sum of all drums)</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">FUEL</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Daily fuel consumption or cost &mdash; how much diesel this site burns per day</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Daily liters used &times; date-specific diesel price</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">GEN HR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Generator run hours per day &mdash; how long the generators actually ran</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Sum of all generator run hours at this site</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">ENERGY%</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Diesel cost as percentage of sales revenue. Lower is better &mdash; high % means fuel is eating into profits</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">(Liters &times; Price) &divide; Sales &times; 100</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SALES</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Daily sales revenue &mdash; how much money this site earns per day</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded sales data (daily total)</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">REASON</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Why this mode was assigned &mdash; explains the logic behind the recommendation</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Auto-generated by decision engine based on thresholds</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				Focus on <span class="font-bold" style="color: #f95630;">REDUCE</span> and <span class="font-bold" style="color: #be2d06;">CLOSE</span> sites first. These are burning fuel faster than they earn revenue. Check the REASON column for specific action items. <span class="font-bold" style="color: #ff9d00;">MONITOR</span> sites should be watched for deterioration &mdash; if their diesel % keeps rising, they will move to REDUCE or CLOSE. <span class="font-bold" style="color: #007518;">FULL</span> sites are healthy and need no action.
+			</div>
+		</div>
 		</div>
 	</div>
 
@@ -299,20 +415,46 @@
 		<div class="mt-2 text-xs font-mono px-8" style="color: #00fc40;">? Who needs fuel first? How many liters? By when?</div>
 	</div>
 	<div style="margin-bottom: 1.5rem;">
-		<!-- KPI Cards -->
-		<div class="grid grid-cols-3 gap-3 mb-3">
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #be2d06;">{urgentCount}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">URGENT DELIVERIES</div>
+		<!-- KPI Card (chart style) -->
+		<div class="mb-3" style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
+			<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
+				<span class="text-[11px] font-black uppercase">DELIVERY QUEUE</span>
+				<span class="text-[10px] font-bold">{queue.length} PENDING</span>
+				<InfoTip {...KPI.operations.deliveryQueue} />
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #383832;">{fmt(totalLitersNeeded)}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">TOTAL LITERS NEEDED</div>
+			<div class="flex">
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #be2d06;">{urgentCount}</div>
+					<div class="text-[9px] font-bold" style="color: #be2d06;">URGENT</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #383832;">{fmt(totalLitersNeeded)}</div>
+					<div class="text-[9px] font-bold" style="color: #65655e;">LITERS</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1;">
+					<div class="text-2xl font-black" style="color: #383832;">{fmt(totalEstCost)}</div>
+					<div class="text-[9px] font-bold" style="color: #65655e;">EST COST</div>
+				</div>
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #383832;">{fmt(totalEstCost)}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">TOTAL EST COST</div>
+			<div style="border-top: 1px solid #ebe8dd;">
+				{#each [
+					{ label: 'CRITICAL', count: qCritical, color: '#be2d06' },
+					{ label: 'HIGH', count: qHigh, color: '#e85d04' },
+					{ label: 'MEDIUM', count: qMedium, color: '#ff9d00' },
+					{ label: 'LOW', count: qLow, color: '#65655e' },
+				] as bar}
+					{#if bar.count > 0}
+						<div class="px-3 py-1 flex items-center gap-2" style="border-top: 1px solid rgba(56,56,50,0.08);">
+							<span class="text-[9px] w-16 shrink-0 font-bold" style="color: {bar.color};">{bar.label}</span>
+							<div class="flex-1 h-4" style="background: #f0ede3;">
+								<div class="h-full" style="width: {queue.length > 0 ? (bar.count / queue.length * 100) : 0}%; background: {bar.color};"></div>
+							</div>
+							<span class="text-[9px] w-6 text-right shrink-0 font-black" style="color: #383832;">{bar.count}</span>
+						</div>
+					{/if}
+				{/each}
 			</div>
+			<div class="px-3 py-1 text-[8px] font-mono" style="background: #f6f4e9; color: #9d9d91; border-top: 1px solid #ebe8dd;">7d_buffer &minus; tank = liters_needed</div>
 		</div>
 
 		<!-- Table -->
@@ -390,6 +532,67 @@
 					</div>
 				{/if}
 			{/if}
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832; width: 110px;">SITE / CODE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Which site needs fuel</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e; width: 220px;">From store master reference data</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Business sector &mdash; CMHL, CP, CFC, or PG</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded blackout file mapping</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">URGENCY</td>
+						<td class="py-1.5 px-2" style="color: #383832;"><span class="font-bold" style="color: #be2d06;">CRITICAL</span> (red, &lt;2 days), <span class="font-bold" style="color: #ff9d00;">HIGH</span> (orange, 2&ndash;3 days), <span class="font-bold" style="color: #e8b500;">MEDIUM</span> (yellow, 3&ndash;5 days), <span class="font-bold" style="color: #007518;">LOW</span> (green, 5&ndash;7 days)</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Based on buffer days remaining</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #be2d06;">BUFFER</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Current days of fuel remaining at this site</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Tank balance &divide; average daily fuel consumption</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">TANK</td>
+						<td class="py-1.5 px-2" style="color: #383832;">How many liters of diesel are left in the tank</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Last reported spare tank balance</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">LITERS NEEDED</td>
+						<td class="py-1.5 px-2" style="color: #383832;">How much fuel to deliver to reach a 7-day buffer &mdash; tells the tanker how much to load</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">7 &times; avg daily used &minus; current tank</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">DELIVERY BY</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Latest date to deliver before the site runs dry &mdash; this is your deadline</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Today + buffer days remaining</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">EST COST</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Estimated cost of the delivery at current diesel price</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Liters needed &times; latest diesel price per liter</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				This is your delivery action list. Work top-to-bottom &mdash; <span class="font-bold" style="color: #be2d06;">CRITICAL</span> sites need fuel today. LITERS NEEDED tells the tanker how much to load. DELIVERY BY is your deadline &mdash; miss it and the site goes dark. Share this table with your logistics team to coordinate tanker schedules.
+			</div>
+		</div>
 		</div>
 	</div>
 
@@ -407,20 +610,46 @@
 	</div>
 	{#if generators.length > 0}
 	<div style="margin-bottom: 1.5rem;">
-		<!-- KPI Cards -->
-		<div class="grid grid-cols-3 gap-3 mb-3">
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #be2d06;">{highRiskCount}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">HIGH RISK</div>
+		<!-- KPI Card (chart style) -->
+		<div class="mb-3" style="border: 2px solid #383832; box-shadow: 3px 3px 0px 0px #383832; background: white;">
+			<div class="px-3 py-1.5 flex justify-between items-center" style="background: #383832; color: #feffd6;">
+				<span class="text-[11px] font-black uppercase">GENERATOR FLEET</span>
+				<span class="text-[10px] font-bold">{generators.length} GENERATORS</span>
+				<InfoTip {...KPI.operations.generatorRisk} />
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #383832;">{generators.length}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">TOTAL GENERATORS</div>
+			<div class="flex">
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #be2d06;">{highRiskCount}</div>
+					<div class="text-[9px] font-bold" style="color: #be2d06;">HIGH RISK</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1; border-right: 1px dashed #ebe8dd;">
+					<div class="text-2xl font-black" style="color: #383832;">{avgHoursUntilService.toFixed(0)}</div>
+					<div class="text-[9px] font-bold" style="color: #65655e;">AVG HRS SVC</div>
+				</div>
+				<div class="p-3 flex flex-col justify-center" style="flex: 1;">
+					<div class="text-2xl font-black" style="color: #007518;">{runningGens}</div>
+					<div class="text-[9px] font-bold" style="color: #007518;">RUNNING</div>
+				</div>
 			</div>
-			<div style="border: 2px solid #383832; box-shadow: 4px 4px 0px 0px #383832; background: #feffd6; padding: 12px; text-align: center;">
-				<div class="text-2xl font-black" style="color: #383832;">{avgHoursUntilService.toFixed(0)}</div>
-				<div class="text-[10px] font-bold uppercase tracking-wider mt-1" style="color: #65655e;">AVG HRS TO SERVICE</div>
+			<div style="border-top: 1px solid #ebe8dd;">
+				{#each [
+					{ label: 'LOW', count: genLow, color: '#007518' },
+					{ label: 'MEDIUM', count: genMed, color: '#ff9d00' },
+					{ label: 'HIGH', count: genHigh, color: '#e85d04' },
+					{ label: 'CRITICAL', count: genCrit, color: '#be2d06' },
+				] as bar}
+					{#if bar.count > 0}
+						<div class="px-3 py-1 flex items-center gap-2" style="border-top: 1px solid rgba(56,56,50,0.08);">
+							<span class="text-[9px] w-16 shrink-0 font-bold" style="color: {bar.color};">{bar.label}</span>
+							<div class="flex-1 h-4" style="background: #f0ede3;">
+								<div class="h-full" style="width: {generators.length > 0 ? (bar.count / generators.length * 100) : 0}%; background: {bar.color};"></div>
+							</div>
+							<span class="text-[9px] w-6 text-right shrink-0 font-black" style="color: #383832;">{bar.count}</span>
+						</div>
+					{/if}
+				{/each}
 			</div>
+			<div class="px-3 py-1 text-[8px] font-mono" style="background: #f6f4e9; color: #9d9d91; border-top: 1px solid #ebe8dd;">hours_until_service threshold</div>
 		</div>
 
 		<!-- Table -->
@@ -444,6 +673,7 @@
 					<thead>
 						<tr style="background: #ebe8dd;">
 							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">SITE</th>
+							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #65655e;">CODE</th>
 							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">SECTOR</th>
 							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">MODEL</th>
 							<th class="font-black uppercase text-right px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">KVA</th>
@@ -458,6 +688,7 @@
 							{@const risk = (row.risk_level || '').toUpperCase()}
 							<tr style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'};">
 								<td class="px-3 py-2 font-bold text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{row.site_id || '—'}</td>
+								<td class="px-3 py-2 font-mono text-xs" style="border-bottom: 1px solid #ebe8dd; color: #65655e;">{row.site_code || ''}</td>
 								<td class="px-3 py-2 text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{row.sector_id || '—'}</td>
 								<td class="px-3 py-2 text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{row.model_name || row.model || '—'}</td>
 								<td class="px-3 py-2 text-right font-mono text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{fmt(row.power_kva)}</td>
@@ -472,6 +703,67 @@
 					</tbody>
 				</table>
 			</div>
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832; width: 110px;">SITE / CODE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Where the generator is located</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e; width: 220px;">From store master reference data</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Business sector &mdash; CMHL, CP, CFC, or PG</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded blackout file mapping</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">MODEL</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Generator model name &mdash; identifies the specific machine</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From blackout file generator column</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">KVA</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Power capacity in kilovolt-amperes. Bigger number = can power more equipment</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Generator rated capacity from spec sheet</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">AVG HR/DAY</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Average hours the generator runs per day &mdash; high number means heavy usage</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Total run hours &divide; number of operating days</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">RISK</td>
+						<td class="py-1.5 px-2" style="color: #383832;"><span class="font-bold" style="color: #007518;">LOW</span> (green, healthy), <span class="font-bold" style="color: #ff9d00;">MEDIUM</span> (yellow, monitor), <span class="font-bold" style="color: #be2d06;">HIGH</span> (red, schedule service immediately)</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Based on hours until service and daily usage rate</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">HRS TO SERVICE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Hours remaining until next maintenance is due. Low number = service soon</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Service interval &minus; cumulative hours since last service</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">NOTE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Maintenance notes or known issues &mdash; check this for context before scheduling service</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From maintenance log / manual entry</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				Sort by RISK to find generators needing service. <span class="font-bold" style="color: #be2d06;">HIGH</span> risk generators could fail and leave a site without power. Schedule maintenance before HRS TO SERVICE reaches zero. High AVG HR/DAY means heavy usage &mdash; check if the generator is being over-relied upon. If a generator fails at a site with only one unit, that site loses all backup power.
+			</div>
+		</div>
 		</div>
 	</div>
 	{/if}
@@ -537,6 +829,57 @@
 					</tbody>
 				</table>
 			</div>
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832; width: 110px;">FROM SITE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Site with excess fuel (surplus) &mdash; the donor</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e; width: 220px;">Sites with buffer &gt;14 days (more fuel than needed)</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">TO SITE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Site that needs fuel (deficit) &mdash; the receiver</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Sites with buffer &lt;3 days (running low)</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">LITERS</td>
+						<td class="py-1.5 px-2" style="color: #383832;">How many liters to transfer between sites</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Calculated to balance both sites above 3-day buffer</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">FROM BUFFER</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Donor site&rsquo;s buffer days <span class="font-bold">after</span> transfer &mdash; must stay above 3 days</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">(Tank &minus; transfer liters) &divide; daily burn</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">TO BUFFER</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Receiving site&rsquo;s buffer days <span class="font-bold">after</span> transfer</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">(Tank + transfer liters) &divide; daily burn</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SAVES DELIVERY</td>
+						<td class="py-1.5 px-2" style="color: #383832;"><span class="font-bold" style="color: #007518;">YES</span> = this transfer avoids ordering a tanker delivery, saving delivery cost. <span class="font-bold" style="color: #ff9d00;">NO</span> = still helpful but a tanker may also be needed</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">YES if transfer brings receiver above 3-day buffer</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				These are recommended fuel moves between nearby sites. Instead of ordering a new tanker delivery, you can move surplus fuel from one site to another. Only transfer if FROM BUFFER stays above 3 days after the move &mdash; never rob Peter to pay Paul. <span class="font-bold" style="color: #007518;">YES</span> in SAVES DELIVERY means real cost savings by avoiding an external tanker order.
+			</div>
+		</div>
 		</div>
 	</div>
 	{/if}
@@ -574,6 +917,7 @@
 					<thead>
 						<tr style="background: #ebe8dd;">
 							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">SITE</th>
+							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #65655e;">CODE</th>
 							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">SECTOR</th>
 							<th class="font-black uppercase text-left px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">MODEL</th>
 							<th class="font-black uppercase text-right px-3 py-2" style="border-bottom: 2px solid #383832; color: #383832;">KVA</th>
@@ -588,6 +932,7 @@
 						{#each top15LoadOpt as row, i}
 							<tr style="background: {i % 2 === 0 ? 'white' : '#f6f4e9'};">
 								<td class="px-3 py-2 font-bold text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{row.site_id || '—'}</td>
+								<td class="px-3 py-2 font-mono text-xs" style="border-bottom: 1px solid #ebe8dd; color: #65655e;">{row.site_code || ''}</td>
 								<td class="px-3 py-2 text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{row.sector_id || '—'}</td>
 								<td class="px-3 py-2 text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{row.model_name || row.model || '—'}</td>
 								<td class="px-3 py-2 text-right font-mono text-xs" style="border-bottom: 1px solid #ebe8dd; color: #383832;">{fmt(row.power_kva)}</td>
@@ -601,6 +946,72 @@
 					</tbody>
 				</table>
 			</div>
+		<!-- What each column means -->
+		<div class="px-4 py-3" style="background: #f6f4e9; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-2" style="color: #383832;">WHAT EACH COLUMN MEANS</div>
+			<table class="w-full text-[10px]" style="border-collapse: collapse;">
+				<thead>
+					<tr style="background: #ebe8dd;">
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 110px;">COLUMN</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7;">WHAT IT TELLS YOU</th>
+						<th class="py-1.5 px-2 text-left font-black uppercase" style="border-bottom: 1px solid #d5d2c7; width: 220px;">HOW IT IS CALCULATED</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832; width: 110px;">SITE / CODE</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Site and generator location</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e; width: 220px;">From store master reference data</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">SECTOR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Business sector &mdash; CMHL, CP, CFC, or PG</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From uploaded blackout file mapping</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">MODEL</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Generator model name</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">From blackout file generator column</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">KVA</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Power capacity in kilovolt-amperes. Bigger number = powers more equipment</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Generator rated capacity from spec sheet</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">L/HR</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Actual fuel consumption per hour &mdash; how thirsty this generator is. Lower is better</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Total liters used &divide; total run hours</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">KVA/L</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Power output per liter of fuel &mdash; efficiency rating. <span class="font-bold" style="color: #007518;">Higher = more efficient</span></td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">KVA capacity &divide; liters consumed per hour</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">RANK</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Efficiency ranking across the entire fleet. <span class="font-bold">1 = most efficient generator</span></td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Sorted by KVA/L descending (best first)</td>
+					</tr>
+					<tr style="background: #f6f4e9; border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #383832;">RECOMMENDATION</td>
+						<td class="py-1.5 px-2" style="color: #383832;">What action to take &mdash; e.g., &ldquo;Prioritize this generator&rdquo; or &ldquo;Consider replacement&rdquo;</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Auto-generated based on efficiency rank and usage</td>
+					</tr>
+					<tr style="border-bottom: 1px solid #ebe8dd;">
+						<td class="py-1.5 px-2 font-bold" style="color: #007518;">SAVINGS</td>
+						<td class="py-1.5 px-2" style="color: #383832;">Potential liters saved per hour if recommendation is followed</td>
+						<td class="py-1.5 px-2 font-mono" style="color: #65655e;">Actual L/hr &minus; best-in-class L/hr for same KVA</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="px-4 py-2.5" style="background: white; border-top: 1px solid #ebe8dd;">
+			<div class="text-[10px] font-black uppercase mb-1.5" style="color: #383832;">HOW TO USE THIS TABLE</div>
+			<div class="text-[10px] leading-relaxed" style="color: #65655e;">
+				This table helps you decide which generators to run first during blackouts. Run the highest-ranked (most efficient) generators first &mdash; they give you more power per liter of diesel. SAVINGS shows how much fuel you save per hour by choosing efficient generators over inefficient ones. Over a month of blackouts, these savings add up significantly.
+			</div>
+		</div>
 		</div>
 	</div>
 	{/if}

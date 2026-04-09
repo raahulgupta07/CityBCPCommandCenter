@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import Chart from '$lib/components/Chart.svelte';
+	import { lineChart, barChart, pieChart } from '$lib/charts';
 
 	interface ToolCall { tool: string; preview: string }
 	interface Message { role: 'user' | 'assistant'; content: string; tools?: ToolCall[]; thinking?: boolean }
@@ -16,12 +18,12 @@
 	let thinkingTools: string[] = $state([]);
 
 	const suggestions = [
-		{ icon: 'local_gas_station', text: 'Which sites have less than 3 days of fuel?' },
-		{ icon: 'compare_arrows', text: 'Compare fuel efficiency across all sectors' },
-		{ icon: 'trending_up', text: 'What will diesel prices be next week?' },
-		{ icon: 'shield', text: 'Give me a BCP risk summary for all sectors' },
-		{ icon: 'build', text: 'Which generators are underperforming?' },
-		{ icon: 'priority_high', text: 'What are the top 5 most urgent sites?' },
+		{ icon: '⛽', text: 'Which sites have less than 3 days of fuel left?' },
+		{ icon: '📊', text: 'What is the BCP score for the CMHL sector?' },
+		{ icon: '🔧', text: 'Are there any generator efficiency anomalies?' },
+		{ icon: '💰', text: 'What is the fuel price forecast for next week?' },
+		{ icon: '🚚', text: 'Show delivery queue for critical sites' },
+		{ icon: '📈', text: 'Compare diesel cost vs sales across sectors' },
 	];
 
 	let thinkingInterval: any;
@@ -128,13 +130,136 @@
 		if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 	}
 
+	interface ChatChart {
+		title: string;
+		xAxis: string[];
+		series: { name: string; data: number[]; type?: string; color?: string }[];
+	}
+
+	function parseCharts(text: string): { segments: { type: 'text' | 'chart'; content: string; chart?: any }[] } {
+		const segments: { type: 'text' | 'chart'; content: string; chart?: any }[] = [];
+		const chartRegex = /```chart\s*\n([\s\S]*?)\n```/g;
+		let lastIndex = 0;
+		let match;
+
+		while ((match = chartRegex.exec(text)) !== null) {
+			// Text before chart
+			if (match.index > lastIndex) {
+				segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+			}
+			// Chart block
+			try {
+				const chartData: ChatChart = JSON.parse(match[1].trim());
+				const colors = ['#007518', '#006f7c', '#be2d06', '#ff9d00', '#383832', '#9C27B0'];
+				const seriesWithColors = chartData.series.map((s, i) => ({
+					...s,
+					color: s.color || colors[i % colors.length]
+				}));
+
+				let option: any;
+				const chartType = chartData.series[0]?.type || 'line';
+				if (chartType === 'bar') {
+					option = barChart(chartData.xAxis, seriesWithColors.map(s => s.data[0] || 0), { title: chartData.title, colors: seriesWithColors.map(s => s.color || '#383832') });
+					// Override for grouped bar if multiple series
+					if (seriesWithColors.length > 1) {
+						option = {
+							title: { text: chartData.title, left: 'center', textStyle: { fontFamily: 'Space Grotesk, monospace', fontWeight: 900, fontSize: 13, color: '#383832' } },
+							tooltip: { trigger: 'axis' },
+							legend: { bottom: 0, textStyle: { fontFamily: 'Space Grotesk', fontSize: 10 } },
+							grid: { top: 40, right: 20, bottom: 40, left: 50 },
+							xAxis: { type: 'category', data: chartData.xAxis, axisLabel: { fontFamily: 'Space Grotesk', fontSize: 10 } },
+							yAxis: { type: 'value', axisLabel: { fontFamily: 'Space Grotesk', fontSize: 10 } },
+							series: seriesWithColors.map(s => ({ name: s.name, type: 'bar', data: s.data, itemStyle: { color: s.color } }))
+						};
+					}
+				} else if (chartType === 'pie') {
+					option = {
+						title: { text: chartData.title, left: 'center', textStyle: { fontFamily: 'Space Grotesk, monospace', fontWeight: 900, fontSize: 13, color: '#383832' } },
+						tooltip: { trigger: 'item' },
+						series: [{ type: 'pie', radius: ['40%', '70%'], data: chartData.xAxis.map((label, i) => ({ name: label, value: seriesWithColors[0]?.data[i] || 0 })), itemStyle: { borderColor: '#fff', borderWidth: 2 } }]
+					};
+				} else {
+					// Line chart
+					option = lineChart(
+						chartData.xAxis,
+						seriesWithColors.map(s => ({ name: s.name, data: s.data, color: s.color || '#383832' })),
+						{ title: chartData.title }
+					);
+				}
+
+				segments.push({ type: 'chart', content: '', chart: option });
+			} catch {
+				// If JSON parse fails, treat as text
+				segments.push({ type: 'text', content: match[0] });
+			}
+			lastIndex = match.index + match[0].length;
+		}
+
+		// Remaining text after last chart
+		if (lastIndex < text.length) {
+			segments.push({ type: 'text', content: text.slice(lastIndex) });
+		}
+
+		// If no charts found, return whole text as single segment
+		if (segments.length === 0) {
+			segments.push({ type: 'text', content: text });
+		}
+
+		return { segments };
+	}
+
 	function renderMarkdown(text: string): string {
-		return text
+		// First, extract and convert markdown tables
+		const lines = text.split('\n');
+		const result: string[] = [];
+		let i = 0;
+		while (i < lines.length) {
+			// Detect table: line with | and next line is separator |---|
+			if (lines[i].trim().startsWith('|') && i + 1 < lines.length && /^\|[\s:*-]+\|/.test(lines[i + 1].trim())) {
+				// Parse header
+				const headers = lines[i].split('|').filter(c => c.trim()).map(c => c.trim());
+				i += 2; // skip header + separator
+				const rows: string[][] = [];
+				while (i < lines.length && lines[i].trim().startsWith('|')) {
+					rows.push(lines[i].split('|').filter(c => c.trim()).map(c => c.trim()));
+					i++;
+				}
+				// Build HTML table
+				let table = '<div class="overflow-x-auto my-3"><table class="w-full text-xs" style="border: 2px solid #383832; border-collapse: collapse;">';
+				table += '<thead><tr style="background: #383832;">';
+				for (const h of headers) {
+					table += `<th class="px-3 py-2 text-left font-black uppercase tracking-wider" style="color: #feffd6; border: 1px solid #383832;">${h}</th>`;
+				}
+				table += '</tr></thead><tbody>';
+				for (let ri = 0; ri < rows.length; ri++) {
+					const bg = ri % 2 === 0 ? '#feffd6' : '#f6f4e0';
+					table += `<tr style="background: ${bg};">`;
+					for (const cell of rows[ri]) {
+						// Color code numbers that look like buffer days
+						let cellHtml = cell;
+						table += `<td class="px-3 py-1.5" style="color: #383832; border: 1px solid #ebe8dd;">${cellHtml}</td>`;
+					}
+					table += '</tr>';
+				}
+				table += '</tbody></table></div>';
+				result.push(table);
+			} else {
+				result.push(lines[i]);
+				i++;
+			}
+		}
+
+		// Now apply inline formatting
+		return result.join('\n')
 			.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 			.replace(/\*(.+?)\*/g, '<em>$1</em>')
-			.replace(/`(.+?)`/g, '<code class="px-1 py-0.5 text-[11px]" style="background: #ebe8dd; color: #383832;">$1</code>')
+			.replace(/`(.+?)`/g, '<code class="px-1 py-0.5 text-[11px]" style="background: #ebe8dd; color: #383832; border-radius: 3px;">$1</code>')
+			.replace(/^#{3}\s+(.+)$/gm, '<div class="font-black text-sm mt-3 mb-1" style="color: #383832;">$1</div>')
+			.replace(/^#{2}\s+(.+)$/gm, '<div class="font-black text-base mt-4 mb-2" style="color: #383832; border-bottom: 2px solid #383832; padding-bottom: 4px;">$1</div>')
+			.replace(/^#{1}\s+(.+)$/gm, '<div class="font-black text-lg mt-4 mb-2" style="color: #383832;">$1</div>')
 			.replace(/^[•●]\s*/gm, '<span style="color: #007518; font-weight: bold;">▸ </span>')
 			.replace(/^- /gm, '<span style="color: #007518; font-weight: bold;">▸ </span>')
+			.replace(/^(\d+)\.\s/gm, '<span class="font-bold" style="color: #383832;">$1.</span> ')
 			.replace(/🔴/g, '<span style="color: #be2d06;">●</span>')
 			.replace(/🟠/g, '<span style="color: #ff9d00;">●</span>')
 			.replace(/🟡/g, '<span style="color: #ff9d00;">●</span>')
@@ -165,20 +290,27 @@
 	<!-- Messages -->
 	<div class="flex-1 overflow-y-auto px-4 py-4 space-y-4" style="background: #f6f4e9;">
 		{#if messages.length === 0}
-			<div class="text-center mt-12">
-				<span class="material-symbols-outlined text-5xl" style="color: #ebe8dd;">psychology</span>
-				<h2 class="text-xl font-black uppercase mt-3 mb-1" style="color: #383832;">Ask me anything about your BCP data</h2>
-				<p class="text-xs mb-8" style="color: #65655e;">Fuel levels, blackouts, costs, predictions, generator status, site comparisons...</p>
+			<div class="flex flex-col items-center justify-center py-12">
+				<div class="w-16 h-16 flex items-center justify-center mb-4" style="background: #383832; border-radius: 50%; box-shadow: 3px 3px 0px 0px #383832;">
+					<span class="material-symbols-outlined text-3xl" style="color: #00fc40;">psychology</span>
+				</div>
+				<h2 class="text-xl font-black uppercase mb-1" style="color: #383832;">BCP AI ASSISTANT</h2>
+				<p class="text-xs mb-8" style="color: #65655e;">Ask about fuel, generators, costs, predictions, and more</p>
 
-				<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-w-3xl mx-auto">
-					{#each suggestions as s}
-						<button onclick={() => send(s.text)}
-							class="text-left px-4 py-3 text-xs font-medium flex items-start gap-2 transition-all hover:translate-y-[-1px]"
-							style="background: white; border: 2px solid #383832; box-shadow: 2px 2px 0px 0px #383832; color: #383832;">
-							<span class="material-symbols-outlined text-sm shrink-0 mt-0.5" style="color: #ff9d00;">{s.icon}</span>
-							{s.text}
-						</button>
-					{/each}
+				<div class="w-full max-w-2xl">
+					<div class="text-[10px] font-black uppercase mb-3 px-1" style="color: #65655e;">TRY ASKING</div>
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+						{#each suggestions as chip}
+							<button
+								class="text-left px-4 py-3 text-xs transition-all hover:scale-[1.02]"
+								style="background: #feffd6; border: 2px solid #383832; box-shadow: 2px 2px 0px 0px #383832; color: #383832; cursor: pointer;"
+								onclick={() => send(chip.text)}
+							>
+								<span class="text-base mr-2">{chip.icon}</span>
+								<span class="font-bold">{chip.text}</span>
+							</button>
+						{/each}
+					</div>
 				</div>
 			</div>
 		{/if}
@@ -202,7 +334,15 @@
 						</div>
 						<div>
 							<div class="px-4 py-3 text-sm leading-relaxed" style="background: white; color: #383832; border: 1px solid #ebe8dd; border-radius: 0 12px 12px 12px;">
-								{@html renderMarkdown(msg.content)}
+								{#each parseCharts(msg.content).segments as seg}
+									{#if seg.type === 'chart' && seg.chart}
+										<div class="my-3" style="border: 2px solid #383832; border-radius: 8px; overflow: hidden;">
+											<Chart option={seg.chart} height="280px" />
+										</div>
+									{:else}
+										{@html renderMarkdown(seg.content)}
+									{/if}
+								{/each}
 							</div>
 
 							{#if msg.tools && msg.tools.length > 0}

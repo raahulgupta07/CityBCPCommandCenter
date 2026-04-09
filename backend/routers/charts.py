@@ -1,4 +1,5 @@
 """Charts router — all data endpoints needed for the 53 missing frontend charts."""
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 import pandas as pd
@@ -50,15 +51,22 @@ def _price_map():
 @router.get("/sites-summary")
 def sites_summary(
     sector: Optional[str] = None,
+    site_type: Optional[str] = None,
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     with get_db() as conn:
         dsql, dp = _dsql("dss.date", date_from, date_to)
 
+        type_filter = ""
+        type_params = []
+        if site_type and site_type != 'All':
+            type_filter = " AND s.site_type = ?"
+            type_params = [site_type]
+
         # Find latest date in range for tank (always use last day's SUM)
-        dp_ld = list(dp)
-        ld_q = f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id=s.site_id WHERE 1=1{dsql}"
+        dp_ld = list(dp) + list(type_params)
+        ld_q = f"SELECT MAX(dss.date) FROM daily_site_summary dss JOIN sites s ON dss.site_id=s.site_id WHERE 1=1{dsql}{type_filter}"
         if sector:
             ld_q += " AND s.sector_id = ?"
             dp_ld.append(sector)
@@ -78,8 +86,9 @@ def sites_summary(
                    SUM(dss.total_gen_run_hr) as total_gen_hr
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE 1=1{dsql}
+            WHERE 1=1{dsql}{type_filter}
         """
+        dp = dp + type_params
         if sector:
             q += " AND s.sector_id = ?"; dp.append(sector)
         q += " GROUP BY dss.site_id ORDER BY avg_daily_used DESC"
@@ -89,11 +98,14 @@ def sites_summary(
         if latest_date and not df.empty:
             dp_tank = [latest_date]
             tq = "SELECT site_id, spare_tank_balance as tank FROM daily_site_summary WHERE date = ?"
-            if sector:
+            if sector or type_filter:
                 # Filter via sites table
                 tq = f"""SELECT dss.site_id, dss.spare_tank_balance as tank
                          FROM daily_site_summary dss JOIN sites s ON dss.site_id=s.site_id
-                         WHERE dss.date = ? AND s.sector_id = ?"""
+                         WHERE dss.date = ?{type_filter}"""
+                dp_tank += type_params
+            if sector:
+                tq += " AND s.sector_id = ?"
                 dp_tank.append(sector)
             tank_df = pd.read_sql_query(tq, conn, params=dp_tank)
             if not tank_df.empty:
@@ -232,17 +244,55 @@ def site_charts(
         gen_daily["variance"] = gen_daily["daily_used_liters"].fillna(0) - gen_daily["expected"]
         gen_daily["cost"] = gen_daily["daily_used_liters"].fillna(0) * price
 
-    # Aggregate by period (weekly/monthly)
+    # Aggregate by period (weekly/monthly) — all values as daily averages
     if period in ("weekly", "monthly") and not daily.empty:
         daily["date"] = pd.to_datetime(daily["date"])
         freq = "W" if period == "weekly" else "ME"
-        agg = daily.set_index("date").resample(freq).agg({
-            "gen_hr": "sum", "fuel": "sum", "tank": "last", "buffer": "last",
-            "blackout_hr": "sum", "num_generators_active": "max",
-            "cost": "sum", "cumulative_fuel": "last", "efficiency": "mean", "fuel_7d_ma": "mean"
+        grouped = daily.set_index("date").resample(freq)
+        agg = grouped.agg({
+            "gen_hr": "mean", "fuel": "mean", "tank": "mean", "buffer": "mean",
+            "blackout_hr": "mean", "num_generators_active": "max",
+            "cost": "mean", "cumulative_fuel": "last", "efficiency": "mean", "fuel_7d_ma": "mean"
         }).reset_index()
+        # Add period start/end dates and day count
+        period_meta = grouped["gen_hr"].agg(["count"]).reset_index()
+        period_meta.columns = ["date", "days_count"]
+        agg = agg.merge(period_meta, on="date", how="left")
+        # Get actual start dates per period
+        starts = daily.reset_index().groupby(pd.Grouper(key="date", freq=freq))["date"].min().reset_index(name="date_start")
+        starts.columns = ["date", "date_start"]
+        ends = daily.reset_index().groupby(pd.Grouper(key="date", freq=freq))["date"].max().reset_index(name="date_end")
+        ends.columns = ["date", "date_end"]
+        agg = agg.merge(starts, on="date", how="left").merge(ends, on="date", how="left")
+        agg["date_start"] = agg["date_start"].dt.strftime("%Y-%m-%d")
+        agg["date_end"] = agg["date_end"].dt.strftime("%Y-%m-%d")
         agg["date"] = agg["date"].dt.strftime("%Y-%m-%d")
         daily = agg
+
+    if period in ("weekly", "monthly") and not gen_daily.empty:
+        gen_daily["date"] = pd.to_datetime(gen_daily["date"])
+        freq = "W" if period == "weekly" else "ME"
+        gd_grouped = gen_daily.groupby([pd.Grouper(key="date", freq=freq), "model_name"])
+        agg_gen = gd_grouped.agg({
+            "gen_run_hr": "mean",
+            "daily_used_liters": "mean",
+            "spare_tank_balance": "mean",
+            "blackout_hr": "mean",
+            "consumption_per_hour": "first",
+        }).reset_index()
+        # Recalculate derived
+        agg_gen["expected"] = agg_gen["consumption_per_hour"].fillna(0) * agg_gen["gen_run_hr"].fillna(0)
+        agg_gen["variance"] = agg_gen["daily_used_liters"].fillna(0) - agg_gen["expected"]
+        agg_gen["cost"] = agg_gen["daily_used_liters"].fillna(0) * price
+        # Add date_start / date_end per period per model
+        starts = gen_daily.groupby([pd.Grouper(key="date", freq=freq), "model_name"])["date"].min().reset_index(name="date_start")
+        ends = gen_daily.groupby([pd.Grouper(key="date", freq=freq), "model_name"])["date"].max().reset_index(name="date_end")
+        agg_gen = agg_gen.merge(starts, on=["date", "model_name"], how="left")
+        agg_gen = agg_gen.merge(ends, on=["date", "model_name"], how="left")
+        agg_gen["date_start"] = agg_gen["date_start"].dt.strftime("%Y-%m-%d")
+        agg_gen["date_end"] = agg_gen["date_end"].dt.strftime("%Y-%m-%d")
+        agg_gen["date"] = agg_gen["date"].dt.strftime("%Y-%m-%d")
+        gen_daily = agg_gen
 
     if period in ("weekly", "monthly") and not sales_daily.empty:
         sales_daily["date"] = pd.to_datetime(sales_daily["date"])
@@ -334,7 +384,7 @@ def site_peak_hours(
     ).reset_index()
 
     grid["cost_per_hr"] = cost_per_hr
-    grid["profitability"] = np.where(cost_per_hr > 0, grid["avg_sales"] / cost_per_hr, 0)
+    grid["profitability"] = np.where(cost_per_hr > 0, grid["avg_sales"] / max(cost_per_hr, 0.01), 0)
     grid["status"] = grid["profitability"].apply(
         lambda p: "PEAK" if p > 3 else "PROFITABLE" if p > 1.5 else "MARGINAL" if p > 1 else "LOSING"
     )
@@ -353,10 +403,15 @@ def site_peak_hours(
 @router.get("/trends/rolling-sector")
 def rolling_sector_trends(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
+    site_type: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     with get_db() as conn:
         dsql, dp = _dsql("dss.date", date_from, date_to)
+        type_filter = ""
+        if site_type and site_type != 'All':
+            type_filter = " AND s.site_type = ?"
+            dp.append(site_type)
         df = pd.read_sql_query(f"""
             SELECT dss.date, s.sector_id,
                    SUM(dss.total_daily_used) as fuel,
@@ -365,7 +420,7 @@ def rolling_sector_trends(
                    AVG(dss.blackout_hr) as blackout
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE 1=1{dsql}
+            WHERE 1=1{dsql}{type_filter}
             GROUP BY dss.date, s.sector_id
             ORDER BY dss.date
         """, conn, params=dp)
@@ -425,10 +480,15 @@ def rolling_sector_trends(
 @router.get("/trends/lng-comparison")
 def lng_comparison(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
+    site_type: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     with get_db() as conn:
         dsql, dp = _dsql("dss.date", date_from, date_to)
+        type_filter = ""
+        if site_type and site_type != 'All':
+            type_filter = " AND s.site_type = ?"
+            dp.append(site_type)
         df = pd.read_sql_query(f"""
             SELECT s.site_type,
                    AVG(dss.total_gen_run_hr) as avg_gen_hr,
@@ -440,7 +500,7 @@ def lng_comparison(
                    COUNT(DISTINCT dss.site_id) as site_count
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE 1=1{dsql}
+            WHERE 1=1{dsql}{type_filter}
             GROUP BY s.site_type
         """, conn, params=dp)
 
@@ -449,7 +509,7 @@ def lng_comparison(
 
     pm = _price_map()
     # Use average price across all sectors for comparison
-    avg_price = sum(pm.values()) / len(pm) if pm else 0
+    avg_price = sum(pm.values()) / max(len(pm), 1) if pm else 0
     df["avg_cost"] = df["avg_fuel"] * avg_price
     df["efficiency"] = np.where(df["total_gen_hr"] > 0, df["total_fuel"] / df["total_gen_hr"], 0)
 
@@ -465,12 +525,19 @@ def rankings(
     metric: str,
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     sector: Optional[str] = None,
+    site_type: Optional[str] = None,
     limit: int = 15,
     user: dict = Depends(get_current_user),
 ):
     allowed = {"diesel_pct", "cost", "fuel_used", "gen_hours", "efficiency"}
     if metric not in allowed:
         raise HTTPException(400, f"Metric must be one of: {', '.join(allowed)}")
+
+    type_filter = ""
+    type_params = []
+    if site_type and site_type != 'All':
+        type_filter = " AND s.site_type = ?"
+        type_params = [site_type]
 
     # For last-day metrics (fuel_used, gen_hours, efficiency), use latest date
     latest = _latest_date()
@@ -481,6 +548,7 @@ def rankings(
                 dsql_d = " AND dss.date = ?"; dp = [latest]
             if sector:
                 dsql_d += " AND s.sector_id = ?"; dp.append(sector)
+            dsql_d += type_filter; dp += type_params
 
             df = pd.read_sql_query(f"""
                 SELECT dss.site_id, s.sector_id, s.site_name,
@@ -503,6 +571,7 @@ def rankings(
             dsql, dp = _dsql("dss.date", date_from, date_to)
             if sector:
                 dsql += " AND s.sector_id = ?"; dp.append(sector)
+            dsql += type_filter; dp += type_params
 
             df = pd.read_sql_query(f"""
                 SELECT dss.site_id, s.sector_id, s.site_name,
@@ -554,10 +623,21 @@ def rankings(
 @router.get("/operations/fleet-stats")
 def fleet_stats(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
+    site_type: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     with get_db() as conn:
         dsql, dp = _dsql("dss.date", date_from, date_to)
+
+        type_filter_dss = ""
+        type_params_dss = []
+        type_filter_s = ""
+        type_params_s = []
+        if site_type and site_type != 'All':
+            type_filter_dss = " AND dss.site_id IN (SELECT site_id FROM sites WHERE site_type = ?)"
+            type_params_dss = [site_type]
+            type_filter_s = " AND s.site_type = ?"
+            type_params_s = [site_type]
 
         # DOW patterns
         dow = pd.read_sql_query(f"""
@@ -570,13 +650,13 @@ def fleet_stats(
                    AVG(dss.total_gen_run_hr) as avg_gen_hr,
                    AVG(dss.blackout_hr) as avg_blackout
             FROM daily_site_summary dss
-            WHERE 1=1{dsql}
+            WHERE 1=1{dsql}{type_filter_dss}
             GROUP BY dow_num ORDER BY dow_num
-        """, conn, params=dp)
+        """, conn, params=dp + type_params_dss)
 
         # Generator utilization
         utilization = pd.read_sql_query(f"""
-            SELECT g.site_id, s.sector_id, g.model_name,
+            SELECT g.site_id, s.sector_id, s.region as site_code, g.model_name,
                    SUM(do.gen_run_hr) as total_run_hr,
                    COUNT(DISTINCT do.date) as active_days,
                    COUNT(DISTINCT dss.date) as total_days
@@ -584,15 +664,15 @@ def fleet_stats(
             JOIN sites s ON g.site_id = s.site_id
             LEFT JOIN daily_operations do ON g.generator_id = do.generator_id AND do.gen_run_hr > 0
             LEFT JOIN daily_site_summary dss ON g.site_id = dss.site_id
-            WHERE g.is_active = 1
+            WHERE g.is_active = 1{type_filter_s}
             GROUP BY g.generator_id
             HAVING total_days > 0
-        """, conn)
+        """, conn, params=type_params_s)
 
         # Theft/waste scores
         dsql2, dp2 = _dsql("do.date", date_from, date_to)
         waste = pd.read_sql_query(f"""
-            SELECT do.site_id, s.sector_id,
+            SELECT do.site_id, s.sector_id, s.region as site_code,
                    AVG(do.daily_used_liters / NULLIF(do.gen_run_hr, 0)) as actual_lph,
                    AVG(g.consumption_per_hour) as rated_lph,
                    COUNT(*) as data_points
@@ -600,10 +680,10 @@ def fleet_stats(
             JOIN generators g ON do.generator_id = g.generator_id
             JOIN sites s ON do.site_id = s.site_id
             WHERE do.gen_run_hr > 0 AND do.daily_used_liters > 0
-                  AND g.consumption_per_hour > 0{dsql2}
+                  AND g.consumption_per_hour > 0{dsql2}{type_filter_s}
             GROUP BY do.site_id
             HAVING data_points >= 3
-        """, conn, params=dp2)
+        """, conn, params=dp2 + type_params_s)
 
     # Process utilization
     if not utilization.empty:
@@ -660,7 +740,7 @@ def predictions_all(user: dict = Depends(get_current_user)):
 
     if not agg.empty and len(agg) >= 7:
         pm = _price_map()
-        avg_price = sum(pm.values()) / len(pm) if pm else 0
+        avg_price = sum(pm.values()) / max(len(pm), 1) if pm else 0
 
         # Simple 7-day forecast using exponential smoothing
         for col, key in [("fuel", "fuel_forecast"), ("efficiency", "efficiency_forecast"),
@@ -671,10 +751,10 @@ def predictions_all(user: dict = Depends(get_current_user)):
                 continue
             # Exponential smoothing alpha=0.3
             alpha = 0.3
-            smoothed = series.iloc[-1]
+            smoothed = series.iloc[-1] if len(series) > 0 else 0
             trend = (series.iloc[-1] - series.iloc[-4]) / 3 if len(series) >= 4 else 0
             forecasts = []
-            last_date = pd.to_datetime(agg["date"].iloc[-1])
+            last_date = pd.to_datetime(agg["date"].iloc[-1]) if not agg.empty else pd.Timestamp.now()
             for i in range(1, 8):
                 smoothed = alpha * series.iloc[-1] + (1 - alpha) * smoothed
                 val = smoothed + trend * i
@@ -700,8 +780,8 @@ def predictions_all(user: dict = Depends(get_current_user)):
         from models.buffer_predictor import get_critical_sites
         stockout_df = get_critical_sites(threshold_days=7)
         result["stockout"] = _df(stockout_df)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"Error in predictions_all fetching critical stockout sites: {e}")
 
     result["purchase_volume"] = _df(purchase_vol.round(0))
 
@@ -784,10 +864,17 @@ def _heatmap_icon(value, metric_key):
 @router.get("/sector-heatmap")
 def sector_heatmap(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
+    site_type: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
     with get_db() as conn:
         dsql, dp = _dsql("dss.date", date_from, date_to)
+
+        type_filter = ""
+        type_params = []
+        if site_type and site_type != 'All':
+            type_filter = " AND s.site_type = ?"
+            type_params = [site_type]
 
         # Find latest date
         max_date_row = conn.execute("SELECT MAX(date) FROM daily_site_summary").fetchone()
@@ -808,10 +895,10 @@ def sector_heatmap(
                    SUM(CASE WHEN dss.days_of_buffer IS NULL THEN 1 ELSE 0 END) as nodata_count
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE dss.date = ?{dsql}
+            WHERE dss.date = ?{dsql}{type_filter}
             GROUP BY s.sector_id
             ORDER BY s.sector_id
-        """, conn, params=[latest_date] + dp)
+        """, conn, params=[latest_date] + dp + type_params)
 
         # Compute per-site averages from SUM totals
         if not df.empty:
@@ -824,9 +911,9 @@ def sector_heatmap(
                    SUM(dss.total_daily_used) / COUNT(DISTINCT dss.date) as avg_fuel_3d
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
-            WHERE dss.date >= date(?, '-3 days') AND dss.date < ?{dsql}
+            WHERE dss.date >= date(?, '-3 days') AND dss.date < ?{dsql}{type_filter}
             GROUP BY s.sector_id
-        """, conn, params=[latest_date, latest_date] + dp)
+        """, conn, params=[latest_date, latest_date] + dp + type_params)
         avg3d_map = {r["sector_id"]: r["avg_fuel_3d"] for _, r in avg3d_fuel.iterrows()} if not avg3d_fuel.empty else {}
 
         # Compute buffer = last day tank / 3d avg fuel
@@ -852,9 +939,9 @@ def sector_heatmap(
             FROM daily_site_summary dss
             JOIN sites s ON dss.site_id = s.site_id
             LEFT JOIN daily_sales ds ON dss.site_id = ds.site_id AND dss.date = ds.date
-            WHERE dss.date = (SELECT date FROM daily_site_summary GROUP BY date ORDER BY COUNT(*) DESC LIMIT 1)
+            WHERE dss.date = (SELECT date FROM daily_site_summary GROUP BY date ORDER BY COUNT(*) DESC LIMIT 1){type_filter}
             GROUP BY s.sector_id
-        """, conn)
+        """, conn, params=type_params)
 
     if df.empty:
         return []

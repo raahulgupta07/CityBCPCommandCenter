@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS store_master (
     store_name          TEXT,
     cost_center_code    TEXT,
     cost_center_name    TEXT,
+    cost_center_description TEXT,
     segment_id          INTEGER,
     segment_name        TEXT,
     company_code        TEXT,
@@ -242,6 +243,7 @@ CREATE TABLE IF NOT EXISTS store_master (
     open_date           TEXT,
     closed_date         TEXT,
     sector_id           TEXT REFERENCES sectors(sector_id),
+    cp_center_id        TEXT,
     created_at          TEXT DEFAULT (datetime('now'))
 );
 
@@ -298,6 +300,18 @@ CREATE TABLE IF NOT EXISTS diesel_expense_ly (
     pct_on_sales        REAL
 );
 
+-- 24. Excel Validation Cache (stored at upload time)
+CREATE TABLE IF NOT EXISTS excel_validation_cache (
+    sector_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    gen_hr REAL DEFAULT 0,
+    fuel REAL DEFAULT 0,
+    tank REAL DEFAULT 0,
+    blackout REAL DEFAULT 0,
+    uploaded_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (sector_id, date)
+);
+
 -- Indexes for fast queries
 CREATE INDEX IF NOT EXISTS idx_daily_ops_site_date ON daily_operations(site_id, date);
 CREATE INDEX IF NOT EXISTS idx_daily_ops_date ON daily_operations(date);
@@ -321,6 +335,32 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id, created_at);
+
+-- 22. Store-Center Allocation (CP center sharing for CMHL stores)
+CREATE TABLE IF NOT EXISTS store_center_allocation (
+    store_cost_center TEXT PRIMARY KEY,
+    store_name TEXT,
+    center_cost_center TEXT NOT NULL,
+    center_name TEXT,
+    allocation_pct REAL NOT NULL,
+    remark TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alloc_center ON store_center_allocation(center_cost_center);
+
+-- 23. Activity Log (user action audit trail)
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    action TEXT NOT NULL,
+    category TEXT NOT NULL,
+    detail TEXT,
+    metadata TEXT,
+    ip_address TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(username, created_at);
+CREATE INDEX IF NOT EXISTS idx_activity_log_cat ON activity_log(category, created_at);
 """
 
 def init_db():
@@ -369,6 +409,8 @@ def init_db():
             ("sites", "closed_date", "TEXT"),
             ("sites", "segment_name", "TEXT"),
             ("sites", "cost_center_description", "TEXT"),
+            ("store_master", "cost_center_description", "TEXT"),
+            ("store_master", "cp_center_id", "TEXT"),
         ]:
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
             if col not in cols:
@@ -382,6 +424,33 @@ def init_db():
         ly_count = conn.execute("SELECT COUNT(*) FROM diesel_expense_ly").fetchone()[0]
         if ly_count == 0:
             _seed_diesel_expense_ly(conn)
+
+        # Seed store_center_allocation if empty
+        alloc_count = conn.execute("SELECT COUNT(*) FROM store_center_allocation").fetchone()[0]
+        if alloc_count == 0:
+            ALLOC_DATA = [
+                ('1000011', 'Ocean Pazundaung', '9200025', 'City Mall Pazundaung', 57.3, 'Shopping Center'),
+                ('1000019', 'Ocean Oaktaya Thiri', '9200028', 'City Mall Ottarathiri', 42.7, 'Shopping Center'),
+                ('1000022', 'Ocean Shwe Gone Dine', '9200027', 'City Mall Tamwe', 44.5, 'Shopping Center'),
+                ('1000024', 'Ocean Mingalar Mandalay', '9200006', 'City Mall Mingalar', 43.7, 'Shopping Center'),
+                ('1000034', 'Ocean Pathein', '9200012', 'City Mall Pathein', 58.5, 'Shopping Center'),
+                ('1000041', 'Ocean Hlaing Thar Yar', '9200015', 'City Mall Hlaing Thar Yar', 60.7, 'Shopping Center'),
+                ('1000068', 'Ocean North Dagon Shwe Pinlone', '9200030', 'City Mall Shwe Pin Lon', 49.2, 'Shopping Center'),
+                ('1100009', 'City Mart China Town Point', '9200002', 'City Mart China Town Point', 54.2, 'Shopping Center'),
+                ('1100010', 'City Mart Myay Ni Ghone', '9200003', 'City Mart Myay Ni Ghone', 42.1, 'Shopping Center'),
+                ('1100023', 'City Mart South Dagon', '9200031', 'City Mart South Dagon', 41.7, 'Shopping Center'),
+                ('1100025', 'City Mart 19th Street', '9200007', 'City Mart 19th Street', 51.2, 'Shopping Center'),
+                ('1100027', 'City Mart Aye Yar Wun', '9200009', 'City Mart Aye Yar Wun', 61.8, 'Shopping Center'),
+                ('1100040', 'City Mart Yae Kyaw Complex', '9200016', 'City Mart Yay Kyaw', 56.1, 'Shopping Center'),
+                ('1100056', 'City Mart Yuzana Dagon Saik Kan', '9200018', 'City Mart Dagon Seik Kan', 47.1, 'Shopping Center'),
+                ('1100058', 'City Mart Kyan Sit Min', '9200019', 'City Mart Kyan Sit Min', 69.6, 'Shopping Center'),
+                ('1100085', 'City Mart Pale Mingalardon', '9200033', 'City Mart Pale', 50.1, 'Shopping Center'),
+                ('1600035', 'Market Place Pyay 6.5 miles', '9200013', 'Marketplace Pyay 6.5 miles', 44.1, 'Shopping Center'),
+            ]
+            conn.executemany(
+                "INSERT OR IGNORE INTO store_center_allocation (store_cost_center, store_name, center_cost_center, center_name, allocation_pct, remark) VALUES (?, ?, ?, ?, ?, ?)",
+                ALLOC_DATA
+            )
 
 
 def _seed_diesel_expense_ly(conn):
@@ -412,6 +481,17 @@ def _seed_diesel_expense_ly(conn):
                   r["yearly_expense_mmk_mil"], r["daily_avg_expense_mmk"], r["pct_on_sales"]))
     except Exception:
         pass  # silently skip if file is malformed
+
+
+# ─── Activity Logging ─────────────────────────────────────────────────────────
+
+def log_activity(conn, user_id, username, action, category, detail=None, metadata=None, ip=None):
+    """Log a user activity."""
+    import json as _json
+    conn.execute(
+        "INSERT INTO activity_log (user_id, username, action, category, detail, metadata, ip_address) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, username, action, category, detail, _json.dumps(metadata) if metadata else None, ip)
+    )
 
 
 # ─── CRUD Helpers ────────────────────────────────────────────────────────────
@@ -554,24 +634,29 @@ def upsert_store_master(conn, gold_code, pos_code, store_name, segment_id,
                         segment_name, company_code, legal_entity, channel,
                         address_state, address_township, latitude, longitude,
                         store_size, open_date, closed_date, sector_id,
-                        cost_center_code=None, cost_center_name=None):
+                        cost_center_code=None, cost_center_name=None,
+                        cost_center_description=None, cp_center_id=None):
     conn.execute("""
         INSERT INTO store_master
             (gold_code, pos_code, store_name, cost_center_code, cost_center_name,
-             segment_id, segment_name, company_code, legal_entity, channel,
-             address_state, address_township, latitude, longitude, store_size,
-             open_date, closed_date, sector_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cost_center_description, segment_id, segment_name, company_code,
+             legal_entity, channel, address_state, address_township,
+             latitude, longitude, store_size, open_date, closed_date,
+             sector_id, cp_center_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(gold_code) DO UPDATE SET
             store_name = excluded.store_name,
             cost_center_code = COALESCE(excluded.cost_center_code, store_master.cost_center_code),
             cost_center_name = COALESCE(excluded.cost_center_name, store_master.cost_center_name),
+            cost_center_description = COALESCE(excluded.cost_center_description, store_master.cost_center_description),
             segment_name = excluded.segment_name,
-            sector_id = excluded.sector_id
+            sector_id = excluded.sector_id,
+            cp_center_id = COALESCE(excluded.cp_center_id, store_master.cp_center_id)
     """, (gold_code, pos_code, store_name, cost_center_code, cost_center_name,
-          segment_id, segment_name, company_code, legal_entity, channel,
-          address_state, address_township, latitude, longitude, store_size,
-          open_date, closed_date, sector_id))
+          cost_center_description, segment_id, segment_name, company_code,
+          legal_entity, channel, address_state, address_township,
+          latitude, longitude, store_size, open_date, closed_date,
+          sector_id, cp_center_id))
 
 
 def upsert_daily_sale(conn, sales_site_name, sector_id, date, brand,

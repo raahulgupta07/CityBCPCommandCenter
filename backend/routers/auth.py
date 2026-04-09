@@ -2,13 +2,14 @@
 from __future__ import annotations
 import os
 import hashlib
+import secrets
 from typing import Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from jose import jwt, JWTError
-from utils.database import get_db
+from utils.database import get_db, log_activity
 
 router = APIRouter()
 security = HTTPBearer()
@@ -52,7 +53,17 @@ class UserResponse(BaseModel):
 
 # ─── Helpers ─────────────────────────────────────────────
 def _hash(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000)
+    return f"{salt}${h.hex()}"
+
+
+def _verify_hash(password: str, stored_hash: str) -> bool:
+    if '$' not in stored_hash:
+        # Legacy SHA-256 hash — verify and return True to allow migration
+        return hashlib.sha256(password.encode()).hexdigest() == stored_hash
+    salt, h = stored_hash.split('$', 1)
+    return hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 100000).hex() == h
 
 
 def _create_token(user_id: int, username: str, role: str) -> str:
@@ -71,13 +82,12 @@ def _validate_user(username: str, password: str) -> dict | None:
                 "email": os.environ.get("SUPER_ADMIN_EMAIL", ""), "role": "super_admin"}
 
     # Check DB
-    pw_hash = _hash(password)
     with get_db() as conn:
         row = conn.execute(
-            "SELECT id, username, display_name, email, role FROM users WHERE username = ? AND password_hash = ? AND is_active = 1",
-            (username, pw_hash)
+            "SELECT id, username, display_name, email, role, password_hash FROM users WHERE username = ? AND is_active = 1",
+            (username,)
         ).fetchone()
-    if row:
+    if row and _verify_hash(password, row[5]):
         return {"id": row[0], "username": row[1], "display_name": row[2], "email": row[3], "role": row[4]}
     return None
 
@@ -112,8 +122,18 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
 def login(req: LoginRequest):
     user = _validate_user(req.username, req.password)
     if not user:
+        try:
+            with get_db() as conn:
+                log_activity(conn, 0, req.username, "LOGIN_FAILED", "AUTH", "Invalid credentials")
+        except Exception:
+            pass
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = _create_token(user["id"], user["username"], user["role"])
+    try:
+        with get_db() as conn:
+            log_activity(conn, user["id"], user["username"], "LOGIN", "AUTH", "Login successful")
+    except Exception:
+        pass
     return TokenResponse(access_token=token, user=user)
 
 

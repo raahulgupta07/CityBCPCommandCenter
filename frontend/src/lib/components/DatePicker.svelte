@@ -16,7 +16,12 @@
 		{ label: 'ALL', days: -1 },
 	];
 
-	function toStr(d: Date) { return d.toISOString().slice(0, 10); }
+	function toStr(d: Date) {
+		const y = d.getFullYear();
+		const m = String(d.getMonth() + 1).padStart(2, '0');
+		const day = String(d.getDate()).padStart(2, '0');
+		return `${y}-${m}-${day}`;
+	}
 
 	function applyPreset(days: number) {
 		if (days === -1) { from = ''; to = ''; open = false; return; }
@@ -77,7 +82,7 @@
 </script>
 
 <div class="relative">
-	<button onclick={() => { open = !open; picking = 'from'; }} class="flex items-center gap-2 px-3 py-2 text-xs font-bold uppercase w-full text-left" style="background: white; border: 2px solid #383832; color: {from ? '#383832' : '#828179'};">
+	<button onclick={() => { open = !open; picking = 'from'; }} class="flex items-center gap-2 px-3 text-xs font-bold uppercase w-full text-left" style="background: white; border: 2px solid #383832; height: 40px; color: {from ? '#383832' : '#828179'};">
 		<span class="material-symbols-outlined text-sm" style="color: #383832;">date_range</span>
 		{displayValue()}
 	</button>

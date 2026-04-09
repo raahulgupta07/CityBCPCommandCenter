@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from utils.ai_agent import morning_briefing, kpi_insight, table_insight, site_insight, executive_briefing
 from backend.routers.auth import get_current_user, SECRET_KEY, ALGORITHM
-from utils.database import get_db
+from utils.database import get_db, log_activity
 
 router = APIRouter()
 
@@ -20,18 +20,25 @@ class InsightRequest(BaseModel):
 @router.post("/insights")
 def get_insight(req: InsightRequest, user: dict = Depends(get_current_user)):
     if req.type == "executive":
-        return {"content": executive_briefing(req.data, force_refresh=req.force_refresh)}
+        result = executive_briefing(req.data, force_refresh=req.force_refresh)
     elif req.type == "briefing":
-        return {"content": morning_briefing(req.data, force_refresh=req.force_refresh)}
+        result = morning_briefing(req.data, force_refresh=req.force_refresh)
     elif req.type == "kpi":
-        return {"content": kpi_insight(req.data, force_refresh=req.force_refresh)}
+        result = kpi_insight(req.data, force_refresh=req.force_refresh)
     elif req.type == "table":
         summary = req.data.get("summary", "")
         table_type = req.data.get("table_type", "sector")
-        return {"content": table_insight(summary, table_type, force_refresh=req.force_refresh)}
+        result = table_insight(summary, table_type, force_refresh=req.force_refresh)
     elif req.type == "site":
-        return {"content": site_insight(req.data, force_refresh=req.force_refresh)}
-    return {"content": "Unknown insight type"}
+        result = site_insight(req.data, force_refresh=req.force_refresh)
+    else:
+        return {"content": "Unknown insight type"}
+    try:
+        with get_db() as conn:
+            log_activity(conn, user["id"], user["username"], "INSIGHT", "AI", f"Generated {req.type}")
+    except Exception:
+        pass
+    return {"content": result}
 
 
 @router.get("/chat/history")
@@ -206,6 +213,18 @@ async def chat_ws(websocket: WebSocket):
                         with get_db() as conn:
                             conn.execute("INSERT INTO chat_messages (user_id, role, content) VALUES (?, 'user', ?)", (user_id, msg))
                             conn.execute("INSERT INTO chat_messages (user_id, role, content, tools) VALUES (?, 'assistant', ?, ?)", (user_id, response, tools_json))
+                            try:
+                                # Get username from token payload
+                                _username = "unknown"
+                                try:
+                                    from jose import jwt as _jwt2
+                                    _payload = _jwt2.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                                    _username = _payload.get("username", "unknown")
+                                except Exception:
+                                    pass
+                                log_activity(conn, user_id, _username, "CHAT", "AI", f"Chat: {msg[:100]}")
+                            except Exception:
+                                pass
 
                     await websocket.send_json({
                         "type": "message",

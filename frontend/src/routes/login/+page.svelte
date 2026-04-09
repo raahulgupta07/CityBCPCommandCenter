@@ -92,7 +92,6 @@
 				<div>v2.0-STABLE</div>
 			</div>
 
-			<p class="mt-4 text-[10px] font-bold uppercase tracking-wider opacity-30" style="color: #383832;">DEFAULT: admin / admin123</p>
 		</div>
 
 		<!-- Right side decoration -->

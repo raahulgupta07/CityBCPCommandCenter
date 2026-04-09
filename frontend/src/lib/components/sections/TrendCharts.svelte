@@ -3,9 +3,8 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { barChart, lineChart, dualAxisChart } from '$lib/charts';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
-	let { dateFrom = '', dateTo = '', sector = '' }: { dateFrom?: string; dateTo?: string; sector?: string } = $props();
+	let { dateFrom = '', dateTo = '', sector = '', siteType = 'All' }: { dateFrom?: string; dateTo?: string; sector?: string; siteType?: string } = $props();
 
 	let daily: any[] = $state([]);
 	let fuelPrices: any[] = $state([]);
@@ -20,6 +19,7 @@
 		if (dateFrom) p.set('date_from', dateFrom);
 		if (dateTo) p.set('date_to', dateTo);
 		if (sector) p.set('sector', sector);
+		if (siteType !== 'All') p.set('site_type', siteType);
 		try {
 			const [d, fp, sd] = await Promise.all([
 				api.get(`/daily-summary?${p}`),
@@ -38,7 +38,7 @@
 	}
 
 	onMount(load);
-	$effect(() => { dateFrom; dateTo; sector; load(); });
+	$effect(() => { dateFrom; dateTo; sector; siteType; load(); });
 
 	// Build price lookup: sector → date → price (latest purchase on or before that date)
 	function priceOnDate(sectorId: string, date: string): number {
@@ -111,8 +111,6 @@
 
 	const sectorColors: Record<string, string> = { CMHL: '#FF9800', CP: '#2196F3', CFC: '#4CAF50', PG: '#9C27B0' };
 </script>
-
-<AiInsightPanel type="kpi" data={{ tab: 'trends', total_days: daily.length, latest_date: daily.length ? daily[daily.length - 1]?.date : '', metrics: 'fuel consumption, blackout hours, generator hours, efficiency trends' }} title="AI INSIGHT — TRENDS & PATTERNS" />
 
 {#if loading}
 	<div class="space-y-4 py-4">

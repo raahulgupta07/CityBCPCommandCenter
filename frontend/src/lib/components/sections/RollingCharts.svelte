@@ -3,7 +3,6 @@
 	import { api } from '$lib/api';
 	import Chart from '$lib/components/Chart.svelte';
 	import { lineChart, dualAxisChart } from '$lib/charts';
-	import AiInsightPanel from '$lib/components/AiInsightPanel.svelte';
 
 	// Sector rolling chart guides
 	const sectorGuides = {
@@ -13,7 +12,7 @@
 		blackout: { formula: 'Average blackout hours per sector, <b>3-day smoothed</b>.', sources: [{ data: 'Blackout', file: 'Blackout Hr Excel', col: 'Blackout Hr', method: 'AVG + 3d rolling' }], reading: [{ color: 'green', text: '✅ Dropping = Grid improving' }, { color: 'red', text: '🔴 Rising = More power outages' }], explain: 'Shows <b>power grid quality</b> per sector. Rising = worse blackouts, plan for more generator fuel.' },
 	};
 
-	let { dateFrom = '', dateTo = '', sector = '', window = 3 }: { dateFrom?: string; dateTo?: string; sector?: string; window?: number } = $props();
+	let { dateFrom = '', dateTo = '', sector = '', siteType = 'All', window = 3 }: { dateFrom?: string; dateTo?: string; sector?: string; siteType?: string; window?: number } = $props();
 
 	let daily: any[] = $state([]);
 	let sectorData: Record<string, any[]> = $state({});
@@ -26,6 +25,7 @@
 		if (dateFrom) p.set('date_from', dateFrom);
 		if (dateTo) p.set('date_to', dateTo);
 		if (sector) p.set('sector', sector);
+		if (siteType !== 'All') p.set('site_type', siteType);
 		const [d, sr] = await Promise.all([
 			api.get(`/daily-summary?${p}`),
 			api.get(`/trends/rolling-sector?${p}`),
@@ -68,8 +68,6 @@
 
 	const wl = `${window}-Day Avg`;
 </script>
-
-<AiInsightPanel type="kpi" data={{ tab: 'rolling', summary: '3-day rolling averages for fuel, buffer, efficiency, blackout across sectors' }} title="AI INSIGHT — ROLLING AVERAGES" />
 
 {#if loading}
 	<div class="space-y-4 py-4">
